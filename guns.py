@@ -19,4 +19,3 @@ class guns(object):
         info += f"Ammo Given: {self.ammo_given}\n"
         info += f"Sprite: {self.sprite}\n"
         return info
-    
