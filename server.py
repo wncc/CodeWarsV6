@@ -39,6 +39,7 @@ class Server:
 
     def setup_game(self):
         self.player_count = 0
+
         # world_data columns (per row):
         # 0:is_alive, 1:x, 2:y, 3:theta, 4:v, 5:omega_or_traveled, 6:fuel, 7:health_or_damage, 8:score, 9:owner_id
         # for tanks: column 6 = fuel, 7 = health, 8 = score
@@ -81,6 +82,10 @@ class Server:
         # per-player gun damage (can be changed later when switching weapons)
         # damage is absolute hit points (default 10 = 10% of 100)
         self.player_gun_damage = np.full(8, 10.0, dtype=np.float64)
+        
+        # Fire rate cooldown (frames between shots)
+        self.FIRE_COOLDOWN = 10  # 10 frames = ~167ms at 60fps
+        self.player_fire_cooldown = np.zeros(8, dtype=np.int32)
         
         # Fire rate cooldown (frames between shots)
         self.FIRE_COOLDOWN = 10  # 10 frames = ~167ms at 60fps

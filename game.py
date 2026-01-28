@@ -93,7 +93,7 @@ class PlayerClient:
             # If fuel is decreasing (not at max), show jetpack is active
             fuel = game_world[i, 6]
             if fuel < 99.9:  # jetpack was used recently
-                pygame.draw.circle(self.screen, (255, 165, 0), (int(game_world[i, 1]), int(game_world[i, 2] + 17.5)), 5)
+                pygame.draw.circle(self.screen, (255, 165, 0), (int(game_world[i, 1]), int(game_world[i, 2] + 35)), 5)
 
             # Draw small health bar above each player
             health = game_world[i, 7]
