@@ -338,7 +338,7 @@ class Server:
                 if self.world_data[b, 0] == 0:
                     continue
                 # bullet position
-                bx, by = self.world_data[b, 1], self.world_data[b, 2]
+                bx, by = self.world_data[b, 1]+20, self.world_data[b, 2]+10
                 damage = self.world_data[b, 7]
                 owner = int(self.world_data[b, 9])
                 
@@ -419,7 +419,7 @@ class Server:
         conn.sendall(np.int32(player_id).tobytes())
 
         # assign default gun (e.g. pistol = index 0)
-        default_gun_id = 0
+        default_gun_id = 1
 
         self.player_gun_id[player_id] = default_gun_id
         self.player_guns[player_id] = deepcopy(guns[default_gun_id])
