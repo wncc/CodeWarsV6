@@ -633,12 +633,10 @@ class Server:
                     bullet_old_positions[b-8, 1] = self.world_data[b, 2]
 
             # Move bullets and check collisions
-            bullet_old_positions_dict = {}  # Store old positions for collision detection
             for b in range(8, 48):
                 if self.world_data[b, 0] == 1:  # if bullet is active
                     bullet_weapon_id = int(self.world_data[b, 10])
                     old_x, old_y = self.world_data[b, 1], self.world_data[b, 2]
-                    bullet_old_positions_dict[b] = (old_x, old_y)
                     self.world_data[b, 1] += np.cos(self.world_data[b, 3]) * self.world_data[b, 4]
                     self.world_data[b, 2] += np.sin(self.world_data[b, 3]) * self.world_data[b, 4]
                     self.world_data[b, 5] += self.world_data[b, 4]
@@ -649,20 +647,12 @@ class Server:
                         # sample along path to detect obstacle hit
                         steps = 5
                         hit = False
-                        hit_x_pos, hit_y_pos = new_x, new_y
                         for i in range(steps + 1):
                             t = i / steps
                             check_x = old_x + (new_x - old_x) * t
                             check_y = old_y + (new_y - old_y) * t
                             if self.is_colliding_with_obstacle(check_x, check_y, 2):
                                 hit = True
-                                # Store the last valid position before collision
-                                if i > 0:
-                                    prev_t = (i - 1) / steps
-                                    hit_x_pos = old_x + (new_x - old_x) * prev_t
-                                    hit_y_pos = old_y + (new_y - old_y) * prev_t
-                                else:
-                                    hit_x_pos, hit_y_pos = old_x, old_y
                                 break
                         if hit:
                             if bullet_weapon_id == SAW_WEAPON_ID:
@@ -680,11 +670,6 @@ class Server:
                                 self.world_data[b, 1] = old_x + np.cos(self.world_data[b, 3]) * self.world_data[b, 4]
                                 self.world_data[b, 2] = old_y + np.sin(self.world_data[b, 3]) * self.world_data[b, 4]
                             else:
-                                # Move bullet back to collision point so client can render impact
-                                self.world_data[b, 1] = hit_x_pos
-                                self.world_data[b, 2] = hit_y_pos
-                                # Mark for removal next frame (by setting a flag)
-                                # For now, just remove immediately but at correct position
                                 self.world_data[b, 0] = 0
 
                     if bullet_weapon_id == SAW_WEAPON_ID:
@@ -863,6 +848,8 @@ class Server:
                         self.world_data[id+bullet_index, 7] = weapon.damage
                         # set bullet owner for scoring
                         self.world_data[id+bullet_index, 9] = idx
+                        # store weapon id so SAW/Rocket logic can identify bullet type
+                        self.world_data[id+bullet_index, 10] = weapon.gun_id
                         bullets_spawned += 1
                 
                 if bullets_spawned > 0:
@@ -889,12 +876,6 @@ class Server:
                 # bullet position
                 bx, by = self.world_data[b, 1], self.world_data[b, 2]
                 
-                # Get old position for path checking
-                if b in bullet_old_positions_dict:
-                    old_bx, old_by = bullet_old_positions_dict[b]
-                else:
-                    old_bx, old_by = bx, by
-                
                 if bullet_weapon_id in WEAPONS:
                     damage = WEAPONS[bullet_weapon_id].damage
                 else:
@@ -902,10 +883,6 @@ class Server:
                 owner = int(self.world_data[b, 9])
                 
                 bullet_hit = False
-                hit_x_pos, hit_y_pos = bx, by
-                
-                # Check collision along bullet path
-                steps = 5
                 for t in range(8):
                     if self.world_data[t, 0] == 0:
                         continue
@@ -918,45 +895,28 @@ class Server:
                     ):
                         # Prevent instant self-kill right at launch.
                         continue
-                    
                     tx, ty = self.world_data[t, 1], self.world_data[t, 2]
-                    
-                    # Check along bullet path for collision
-                    for i in range(steps + 1):
-                        sample_t = i / steps
-                        check_x = old_bx + (bx - old_bx) * sample_t
-                        check_y = old_by + (by - old_by) * sample_t
-                        dist = np.sqrt((tx - check_x)**2 + (ty - check_y)**2)
-                        
-                        if dist < config.BULLET_HIT_RADIUS:
-                            if bullet_weapon_id == SAW_WEAPON_ID:
-                                # Saw projectile pierces and kills everything it touches.
-                                self.world_data[t, 7] = 0
+                    dist = np.sqrt((tx - bx)**2 + (ty - by)**2)
+                    if dist < config.BULLET_HIT_RADIUS:
+                        if bullet_weapon_id == SAW_WEAPON_ID:
+                            # Saw projectile pierces and kills everything it touches.
+                            self.world_data[t, 7] = 0
+                            if 0 <= owner < 8:
+                                self.world_data[owner, 8] += 1
+                            self.respawn(t, delay=0)
+                            continue
+                        else:
+                            # Normal hit - apply damage once and consume bullet.
+                            self.world_data[t, 7] -= damage
+                            bullet_hit = True
+                            if self.world_data[t, 7] <= 0:
                                 if 0 <= owner < 8:
                                     self.world_data[owner, 8] += 1
                                 self.respawn(t, delay=0)
-                                break
-                            else:
-                                # Normal hit - apply damage once and consume bullet.
-                                self.world_data[t, 7] -= damage
-                                bullet_hit = True
-                                # Store collision position
-                                hit_x_pos = check_x
-                                hit_y_pos = check_y
-                                if self.world_data[t, 7] <= 0:
-                                    if 0 <= owner < 8:
-                                        self.world_data[owner, 8] += 1
-                                    self.respawn(t, delay=0)
-                                break
-                    
-                    if bullet_hit:
-                        break
+                            break
                 
                 # remove bullet after processing all potential hits
                 if bullet_hit:
-                    # Move bullet to collision point for visual impact
-                    self.world_data[b, 1] = hit_x_pos
-                    self.world_data[b, 2] = hit_y_pos
                     self.world_data[b, 0] = 0
             
             # Sync all player ammo to world_data at end of frame (after all shooting/reloading)

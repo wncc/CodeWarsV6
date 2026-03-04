@@ -242,7 +242,7 @@ WEAPON_STATS = {
         "bullet_speed": 55,
     },
     11: {
-        "name": "SMAW",
+        "name": "SAW",
         "damage": 100,
         "accuracy": 0,
         "reload_time": 5,
@@ -253,8 +253,8 @@ WEAPON_STATS = {
         "rate_of_fire": 1.25,
         "magazine_capacity": 3,
         "ammo_given": 6,
-        "sprite_file": "smaw.png",
-        "bullet_speed": 45,
+        "sprite_file": "saw.png",
+        "bullet_speed": 3.0,
     },
     12: {
         "name": "TAVOR",
@@ -314,21 +314,6 @@ WEAPON_STATS = {
         "magazine_capacity": 3,
         "ammo_given": 12,
         "sprite_file": "rocket_launcher.png",
-        "bullet_speed": 3.0,
-    },
-    16: {
-        "name": "SAW",
-        "damage": 100,
-        "accuracy": 0,
-        "reload_time": 5,
-        "melee": 35,
-        "rpf": 1,
-        "effective_range": 1000,
-        "dual_wielding": False,
-        "rate_of_fire": 1.25,
-        "magazine_capacity": 3,
-        "ammo_given": 6,
-        "sprite_file": "saw.png",
         "bullet_speed": 3.0,
     },
 }
@@ -437,19 +422,19 @@ WORLD_TOTAL_AMMO = 10
 BULLET_HIT_RADIUS = 25      # Collision detection radius for bullets vs players
 
 # SAW weapon settings
-SAW_WEAPON_ID = 16
+SAW_WEAPON_ID = 11
 SAW_LIFETIME = 5                    # Seconds a saw projectile stays alive
 SAW_EXPLOSION_RADIUS = 60.0         # Small frag-like blast on saw timeout
 SAW_EXPLOSION_DAMAGE = 300.0
 SAW_SELF_HIT_ARM_DISTANCE = 35.0    # Must travel this far before it can hurt the shooter
 
+RESPAWN_WITH_FULL_FUEL = True
+RESPAWN_WITH_FULL_HEALTH = True
+
 # Rocket Launcher settings
 ROCKET_LAUNCHER_ID = 15
 ROCKET_EXPLOSION_RADIUS = 80.0
 ROCKET_EXPLOSION_DAMAGE = 500.0
-
-RESPAWN_WITH_FULL_FUEL = True
-RESPAWN_WITH_FULL_HEALTH = True
 
 # =============================================================================
 # HELPER FUNCTIONS
