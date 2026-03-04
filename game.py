@@ -127,7 +127,17 @@ class PlayerClient:
                 self.running = False
                 break
 
-            game_world, gun_spawns, inventory_data = result
+            # Unpack result (now includes gas_data + grenade_data)
+            if len(result) == 5:
+                game_world, gun_spawns, inventory_data, gas_data, grenade_data = result
+            elif len(result) == 3:
+                # Fallback for older server (backward compatibility)
+                game_world, gun_spawns, inventory_data = result
+                gas_data = np.zeros((0, 4), dtype=np.float64)
+                grenade_data = np.zeros((8, 4), dtype=np.float64)
+            else:
+                self.running = False
+                break
 
             if self.input_provider is not None:
                 self.input_provider.update_state(

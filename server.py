@@ -9,6 +9,66 @@ from gun_spawner import GunSpawner, PlayerInventory
 import config
 
 class Server:
+    def grenade_effect_active_after_explosion(self, grenade_slot):
+        """True when a grenade slot is no longer active but its lingering effect still exists."""
+        if 48 <= grenade_slot <= 54 and self.world_data[grenade_slot, 0] == 1:
+            return False
+        return any(
+            effect.get('source_slot') == grenade_slot and effect.get('duration', 0) > 0
+            for effect in self.gas_effects.values()
+        )
+    
+    def grenade_damage(self, distance, max_damage, radius, falloff=2):
+        if distance >= radius:
+            return 0.0
+        damage = max_damage * (1 - (distance / radius))
+        return damage
+
+    def throw_grenade(self, player_id, grenade_id, throw_angle, throw_power):
+        """
+        Spawns a grenade with gravity-based arc.
+        - player_id: int, the player throwing
+        - grenade_id: int, type of grenade (from weapons.py)
+        - throw_angle: float, angle in radians
+        - throw_power: float, initial speed
+        """
+        from weapons import get_grenade
+        # Find a free grenade slot (rows 48-54)
+        for i in range(48, 55):
+            if self.world_data[i, 0] == 0:
+                # Get player position
+                px, py = self.world_data[player_id, 1], self.world_data[player_id, 2]
+                vx = throw_power * np.cos(throw_angle)
+                vy = throw_power * np.sin(throw_angle)
+                grenade = get_grenade(grenade_id)
+                if grenade is None:
+                    return False
+                # Fill world_data for grenade
+                self.world_data[i, 0] = 1  # active
+                self.world_data[i, 1] = px
+                self.world_data[i, 2] = py
+                self.world_data[i, 3] = throw_angle  # store angle if needed
+                self.world_data[i, 4] = vx  # vx
+                self.world_data[i, 5] = vy  # vy
+                self.world_data[i, 6] = grenade.blast_radius
+                self.world_data[i, 7] = grenade.damage
+                self.world_data[i, 8] = grenade.effect_time
+                self.world_data[i, 9] = player_id
+                self.world_data[i, 10] = grenade_id
+                # Store fuse timer in a dict for each grenade slot
+                if not hasattr(self, 'grenade_fuse_timers'):
+                    self.grenade_fuse_timers = {}
+                # proxy grenades should arm after 2 seconds regardless of their config
+                if grenade.is_proxy:
+                    self.grenade_fuse_timers[i] = 2.0
+                    # ensure we have an armed-state tracker
+                    if not hasattr(self, 'proxy_armed'):
+                        self.proxy_armed = set()
+                else:
+                    self.grenade_fuse_timers[i] = grenade.fuse_time
+                return True
+        return False  # No free slot
+    
     def __init__(self):
         PORT = config.SERVER_PORT
         if not self._start_server(PORT):
@@ -43,13 +103,21 @@ class Server:
         return True
 
     def setup_game(self):
+        # Grenade cooldown per player (seconds)
+        self.player_grenade_cooldown = np.zeros(8, dtype=np.float64)
+        self.player_respawn_cooldown = np.zeros(8, dtype=np.float64)
         self.player_count = 0
         # world_data columns (per row):
-        # 0:is_alive, 1:x, 2:y, 3:theta, 4:v, 5:omega_or_traveled, 6:fuel, 7:health_or_damage, 8:score, 9:current_ammo, 10:total_ammo
+        # 0:is_alive, 1:x, 2:y, 3:theta, 4:v, 5:omega_or_traveled, 6:fuel, 7:health_or_damage, 8:score, 9:current_ammo, 10:total_ammo_or_weapon_id
         # for tanks: column 6 = fuel, 7 = health, 8 = score, 9 = current_ammo, 10 = total_ammo
-        # for bullets: column 5 = distance traveled, 7 = damage, 9 = owner id
-        self.world_data = np.zeros((48, 11), dtype=np.float64)
-        self.player_inputs = np.zeros((8, 10), dtype=np.int32)  # 10 inputs: W,A,D,UP,DOWN,LEFT,RIGHT,SPACE,R,S
+        # for bullets: column 5 = distance traveled, 7 = snapshot damage, 9 = owner id, 10 = weapon id
+        self.world_data = np.zeros((55, 11), dtype=np.float64)
+        self.player_inputs = np.zeros((8, 12), dtype=np.int32)  # 12 inputs: W,A,D,UP,DOWN,LEFT,RIGHT,SPACE,R,S,G,C
+        self.grenade_data = np.zeros((10, 4), dtype=np.float64)  # separate array for grenades (slots 48-54 in world_data)
+        self.grenade_data[:8, 0] = 1  # default selected grenade type: frag
+        self.grenade_data[:8, 1] = config.FRAG_GRENADE_COUNT
+        self.grenade_data[:8, 2] = config.PROXY_GRENADE_COUNT
+        self.grenade_data[:8, 3] = config.GAS_GREANADE_COUNT
 
         # Load constants from config
         TANK_V = config.TANK_SPEED
@@ -85,14 +153,14 @@ class Server:
         self.world_data[:8, 8] = 0.0  # score
 
         # Weapon system - player inventories with dual gun support
-        self.player_inventories = [PlayerInventory(starting_weapon_id=1) for _ in range(8)]
+        self.player_inventories = [PlayerInventory(starting_weapon_id=config.DEFAULT_STARTING_WEAPON) for _ in range(8)]
         
         # Fire rate cooldown per player (in seconds, tracks time since last shot)
         self.player_fire_cooldown = np.zeros(8, dtype=np.float64)
         # Reload cooldown per player (in seconds, tracks time remaining for reload)
         self.player_reload_cooldown = np.zeros(8, dtype=np.float64)
         # Track previous frame's input state for edge detection
-        self.previous_inputs = np.zeros((8, 10), dtype=np.int32)
+        self.previous_inputs = np.zeros((8, 12), dtype=np.int32)
         self.last_frame_time = time.time()
         
         # Collision map system - grid-based obstacles
@@ -101,6 +169,11 @@ class Server:
         # Load map from file - this will set GRID_W, GRID_H, and collision_map
         self.current_map_name = config.DEFAULT_MAP
         self.load_map(self.current_map_name)
+        
+        # Gas grenade effect tracking - stores active gas zones
+        # Format: {effect_id: {'x': x, 'y': y, 'radius': radius, 'damage': damage, 'duration': remaining_time}}
+        self.gas_effects = {}
+        self.gas_effect_counter = 0  # Unique ID for each gas effect
         
         # Initialize gun spawner system
         self.gun_spawner = GunSpawner()
@@ -209,7 +282,7 @@ class Server:
         return offsets.get(weapon_id, (0, 0))
     
     def get_extended_game_state(self):
-        """Package world_data, gun spawns, and player inventories for client"""
+        """Package world_data, gun spawns, player inventories, gas effects, and grenade data for client"""
         # Gun spawn data: [[x, y, weapon_id, is_active], ...]
         spawn_data = self.gun_spawner.get_spawn_data_for_client()
         
@@ -226,7 +299,16 @@ class Server:
             self.world_data[i, 9] = current_gun.current_ammo
             self.world_data[i, 10] = current_gun.total_ammo
         
-        return self.world_data, spawn_data, inventory_data
+        # Gas effects data: [[x, y, radius, duration], ...] for all active gas zones
+        gas_data = np.array([
+            [effect['x'], effect['y'], effect['radius'], effect['duration']]
+            for effect in self.gas_effects.values()
+        ], dtype=np.float64) if self.gas_effects else np.zeros((0, 4), dtype=np.float64)
+        
+        # Grenade data per player: [selected_type, frag_count, proxy_count, gas_count]
+        grenade_data = self.grenade_data[:8].copy()
+        
+        return self.world_data, spawn_data, inventory_data, gas_data, grenade_data
 
     def run_game(self):
         MAX_BULLET_DIST = config.MAX_BULLET_DISTANCE
@@ -610,7 +692,7 @@ class Server:
         self.respawn(player_id)
 
         while True:
-            data = conn.recv(10)  # now receiving 10 inputs (added reload and switch)
+            data = conn.recv(16)  # allow for up to 16 bytes (12 bools = 12 bytes, but allow extra)
             if not data:
                 self.world_data[player_id, 0] = 0
                 if hasattr(self, 'player_vy'):
@@ -618,13 +700,34 @@ class Server:
                 break
 
             player_input = np.frombuffer(data, dtype=bool)
+            # Robustly pad or truncate to 12 inputs
+            if len(player_input) < 12:
+                padded_input = np.zeros(12, dtype=bool)
+                padded_input[:len(player_input)] = player_input
+                player_input = padded_input
+            elif len(player_input) > 12:
+                player_input = player_input[:12]
             self.player_inputs[player_id] = player_input.astype(int)
-            
+
             # Prepare extended game state
-            world_data, spawn_data, inventory_data = self.get_extended_game_state()
-            
-            # Send all data: world_data + spawn_data + inventory_data
-            conn.send(world_data.tobytes() + spawn_data.tobytes() + inventory_data.tobytes())
+            world_data, spawn_data, inventory_data, gas_data, grenade_data = self.get_extended_game_state()
+
+            # Send all data with explicit length header for robust client parsing
+            world_bytes = world_data.tobytes()
+            spawn_bytes = spawn_data.tobytes()
+            gas_bytes = gas_data.tobytes()
+            grenade_bytes = grenade_data.tobytes()
+            inventory_bytes = inventory_data.tobytes()
+            header_bytes = np.array([len(spawn_bytes), len(gas_bytes), len(grenade_bytes)], dtype=np.int32).tobytes()
+
+            # Packet layout:
+            # [world_data float64 fixed size]
+            # [header int32*3 -> spawn_len, gas_len, grenade_len]
+            # [spawn_data bytes]
+            # [gas_data bytes]
+            # [grenade_data bytes]
+            # [inventory_data int32 fixed size]
+            conn.sendall(world_bytes + header_bytes + spawn_bytes + gas_bytes + grenade_bytes + inventory_bytes)
 
 
             

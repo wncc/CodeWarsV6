@@ -48,47 +48,58 @@ class Network:
             client_msg = keyboard_input.tobytes()
             self.client.send(client_msg)
             reply = bytes()
-            # expect 48 rows * 11 columns * 8 bytes per float64 = 4224 bytes
-            # + spawn_data (variable size, max 50 spawns * 4 values * 4 bytes = 800 bytes)
-            # + inventory_data (8 players * 3 values * 4 bytes = 96 bytes)
-            # Total expected: 4224 + variable spawn + 96
-            # For simplicity, receive a fixed larger buffer
-            while len(reply) < 5120:  # Increased buffer size
-                chunk = self.client.recv(2048)
+            # expect 55 rows * 11 columns * 8 bytes per float64 = 4840 bytes (world_data)
+            # + 12 bytes header (3 int32s)
+            # + spawn_data (variable)
+            # + gas_data (variable)
+            # + grenade_data (8 * 4 * 8 = 256 bytes)
+            # + inventory_data (8 * 3 * 4 = 96 bytes)
+            # Total minimum: 4840 + 12 + 256 + 96 = 5204 bytes
+            while len(reply) < 5204:
+                chunk = self.client.recv(4096)
                 if not chunk:
                     break
                 reply += chunk
-                if len(reply) >= 4224:  # At minimum we have world_data
+                if len(reply) >= 4840:  # At minimum we have world_data
                     break
                     
-            # Parse world_data (first 4224 bytes)
-            game_world = np.frombuffer(reply[:4224], dtype=np.float64).reshape((48, 11))
+            # Parse world_data (first 4840 bytes - 55 entities including grenades)
+            game_world = np.frombuffer(reply[:4840], dtype=np.float64).reshape((55, 11))
             
-            # Parse gun spawn data (variable length, but we'll read what's available)
-            remaining = reply[4224:]
+            # Parse header to get variable data sizes
+            header = np.frombuffer(reply[4840:4852], dtype=np.int32)
+            spawn_len, gas_len, grenade_len = header
+            
+            # Parse spawn, gas, and grenade data
+            offset = 4852
+            spawn_bytes = reply[offset:offset+spawn_len]
+            offset += spawn_len
+            gas_bytes = reply[offset:offset+gas_len]
+            offset += gas_len
+            grenade_bytes = reply[offset:offset+grenade_len]
+            offset += grenade_len
+            inventory_bytes = reply[offset:offset+96]
+            
+            # Decode spawn data
             gun_spawns = []
-            inventory_data = None
+            if spawn_len >= 16:
+                num_spawns = spawn_len // 16
+                spawn_array = np.frombuffer(spawn_bytes[:num_spawns*16], dtype=np.float32).reshape((-1, 4))
+                gun_spawns = spawn_array.tolist()
             
-            if len(remaining) >= 96:  # At least inventory data present
-                # Try to parse spawn data (anything before last 96 bytes)
-                spawn_bytes = remaining[:-96]
-                inventory_bytes = remaining[-96:]
-                
-                if len(spawn_bytes) >= 16:  # At least one spawn (4 floats * 4 bytes)
-                    try:
-                        num_spawns = len(spawn_bytes) // 16
-                        spawn_array = np.frombuffer(spawn_bytes[:num_spawns*16], dtype=np.float32).reshape((-1, 4))
-                        gun_spawns = spawn_array.tolist()
-                    except:
-                        pass
-                
-                try:
-                    inventory_data = np.frombuffer(inventory_bytes, dtype=np.int32).reshape((8, 3))
-                except:
-                    pass
+            # Decode inventory data
+            inventory_data = np.frombuffer(inventory_bytes, dtype=np.int32).reshape((8, 3))
             
-            return game_world, gun_spawns, inventory_data
+            # Decode gas data
+            gas_data = np.zeros((0, 4), dtype=np.float64)
+            if gas_len > 0:
+                gas_data = np.frombuffer(gas_bytes, dtype=np.float64).reshape((-1, 4))
+            
+            # Decode grenade data
+            grenade_data = np.frombuffer(grenade_bytes, dtype=np.float64).reshape((8, 4))
+            
+            return game_world, gun_spawns, inventory_data, gas_data, grenade_data
         except socket.error as e:
             print(e)
-            return None, [], None
+            return None, [], None, None, None
 

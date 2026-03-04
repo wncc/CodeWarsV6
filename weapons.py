@@ -94,3 +94,34 @@ def get_weapon(weapon_id):
 def get_all_weapon_names():
     """Get list of all weapon names"""
     return [WEAPONS[i].name for i in sorted(WEAPONS.keys())]
+
+class Grenade:
+    def __init__(self, grenade_id, name, damage, blast_radius, fuse_time, sprite_file, effect_time, proxy):
+        self.grenade_id = grenade_id
+        self.name = name
+        self.damage = damage
+        self.blast_radius = blast_radius
+        self.effect_time = effect_time
+        self.fuse_time = fuse_time
+        self.sprite_file = sprite_file
+        self.is_proxy = proxy
+
+grenades = {
+    1: Grenade(1, "Frag Grenade", damage=1000, blast_radius=100, fuse_time=3, effect_time=1, sprite_file="frag_grenade.png", proxy=False),
+    2: Grenade(2, "Proximity Grenade", damage=800, blast_radius=80, fuse_time=5, effect_time=1.5, sprite_file="prox_grenade.png", proxy=True),
+    3: Grenade(3, "Gas Grenade", damage=750, blast_radius=100, fuse_time=2, effect_time=10, sprite_file="gas_grenade.png", proxy=False)
+}
+
+def get_grenade(grenade_id):
+    """Get a fresh copy of a grenade"""
+    if grenade_id in grenades:
+        grenade = grenades[grenade_id]
+        return Grenade(
+            grenade.grenade_id, grenade.name, grenade.damage, grenade.blast_radius,
+            grenade.fuse_time, grenade.sprite_file, grenade.effect_time, grenade.is_proxy
+        )
+    return None
+
+def get_all_grenade_names():
+    """Get list of all grenade names"""
+    return [grenades[i].name for i in sorted(grenades.keys())]

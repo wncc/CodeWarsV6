@@ -301,6 +301,36 @@ WEAPON_STATS = {
         "sprite_file": "minigun.png",
         "bullet_speed": 68,
     },
+    15: {
+        "name": "ROCKET_LAUNCHER",
+        "damage": 100,
+        "accuracy": 10,
+        "reload_time": 4,
+        "melee": 40,
+        "rpf": 1,
+        "effective_range": 1200,
+        "dual_wielding": False,
+        "rate_of_fire": 0.5,
+        "magazine_capacity": 3,
+        "ammo_given": 12,
+        "sprite_file": "rocket_launcher.png",
+        "bullet_speed": 3.0,
+    },
+    16: {
+        "name": "SAW",
+        "damage": 100,
+        "accuracy": 0,
+        "reload_time": 5,
+        "melee": 35,
+        "rpf": 1,
+        "effective_range": 1000,
+        "dual_wielding": False,
+        "rate_of_fire": 1.25,
+        "magazine_capacity": 3,
+        "ammo_given": 6,
+        "sprite_file": "saw.png",
+        "bullet_speed": 3.0,
+    },
 }
 
 # =============================================================================
@@ -310,6 +340,13 @@ GUN_SPAWN_INTERVAL = 15.0    # Seconds before gun respawns
 GUN_PICKUP_RADIUS = 20.0     # Distance to pick up gun
 MAX_GUNS_PER_PLAYER = 2      # Inventory size
 DEFAULT_STARTING_WEAPON = 1  # Desert Eagle
+
+# =============================================================================
+# GRENADE DATA
+# =============================================================================
+FRAG_GRENADE_COUNT = 2       # Number of frag grenades given on spawn
+PROXY_GRENADE_COUNT = 1      # Number of proximity grenades given on spawn
+GAS_GREANADE_COUNT = 1       # Number of gas grenades given on spawn
 
 # Gun spawn locations per map
 # Format: (x, y, weapon_id)
@@ -397,7 +434,20 @@ WORLD_TOTAL_AMMO = 10
 # =============================================================================
 # GAME MECHANICS
 # =============================================================================
-BULLET_HIT_RADIUS = 23      # Collision detection: player sprite (20px radius) + bullet (3px radius)
+BULLET_HIT_RADIUS = 25      # Collision detection radius for bullets vs players
+
+# SAW weapon settings
+SAW_WEAPON_ID = 16
+SAW_LIFETIME = 5                    # Seconds a saw projectile stays alive
+SAW_EXPLOSION_RADIUS = 60.0         # Small frag-like blast on saw timeout
+SAW_EXPLOSION_DAMAGE = 300.0
+SAW_SELF_HIT_ARM_DISTANCE = 35.0    # Must travel this far before it can hurt the shooter
+
+# Rocket Launcher settings
+ROCKET_LAUNCHER_ID = 15
+ROCKET_EXPLOSION_RADIUS = 80.0
+ROCKET_EXPLOSION_DAMAGE = 500.0
+
 RESPAWN_WITH_FULL_FUEL = True
 RESPAWN_WITH_FULL_HEALTH = True
 
