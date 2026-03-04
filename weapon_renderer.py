@@ -14,6 +14,18 @@ class WeaponRenderer:
             os.makedirs(self.gun_directory)
             print(f"[WeaponRenderer] Created directory: {self.gun_directory}")
             print(f"[WeaponRenderer] Please add gun PNG files to: {self.gun_directory}")
+        
+        # Map weapon IDs to their bullet/ammo sprites
+        self.weapon_bullet_sprites = {
+            11: "saw_ammo.png",           # SAW uses saw_ammo
+            15: "rocket_launcher_ammo.png", # Rocket Launcher uses rocket_launcher_ammo
+            # All other weapons use default bullet.png
+        }
+    
+    def get_bullet_sprite(self, weapon_id):
+        """Get the appropriate bullet sprite for a weapon"""
+        sprite_file = self.weapon_bullet_sprites.get(weapon_id, "bullet.png")
+        return self.load_gun_sprite(sprite_file)
     
     def load_gun_sprite(self, sprite_file):
         """Load and cache a gun sprite"""

@@ -57,7 +57,7 @@ class PlayerClient:
 
             self.weapon_renderer = WeaponRenderer()
             self.effects_manager = WeaponEffectsManager()
-            self.bullet_sprite = self.weapon_renderer.load_gun_sprite("bullet.png")
+            # Remove single bullet_sprite - will load dynamically per weapon
             self.player_weapons = [WEAPONS[1] for _ in range(8)]
             
             # Track previous state for effect detection
@@ -390,6 +390,7 @@ class PlayerClient:
             
             bx, by = int(game_world[i, 1]), int(game_world[i, 2])
             bullet_angle = game_world[i, 3]
+            weapon_id = int(game_world[i, 10])  # Get weapon ID for this bullet
             
             # Draw bullet trail (line behind bullet)
             trail_length = 15  # Trail length in pixels
@@ -397,11 +398,14 @@ class PlayerClient:
             trail_start_y = by - int(np.sin(bullet_angle) * trail_length)
             pygame.draw.line(self.screen, (255, 255, 100), (trail_start_x, trail_start_y), (bx, by), 2)
             
+            # Get weapon-specific bullet sprite
+            bullet_sprite = self.weapon_renderer.get_bullet_sprite(weapon_id)
+            
             # Draw bullet sprite if available
-            if self.bullet_sprite:
+            if bullet_sprite:
                 # Scale bullet sprite to small size
                 bullet_size = 6
-                scaled_bullet = pygame.transform.scale(self.bullet_sprite, (bullet_size, bullet_size))
+                scaled_bullet = pygame.transform.scale(bullet_sprite, (bullet_size, bullet_size))
                 # Rotate bullet to match trajectory
                 angle_degrees = np.degrees(bullet_angle)
                 rotated_bullet = pygame.transform.rotate(scaled_bullet, -angle_degrees)
