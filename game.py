@@ -110,9 +110,18 @@ class PlayerClient:
 
     def _load_map_background(self):
         """Load and scale the map background image to match world dimensions."""
+        map_name = str(config.DEFAULT_MAP).strip().lower()
+        alias_candidates = {
+            "catacombs": ["catacomb", "catacombs"],
+            "outpost": ["outpost"],
+        }
+
+        name_candidates = [map_name] + alias_candidates.get(map_name, [])
         bg_candidates = [
-            os.path.join("assets", "catacombs final.png"),
-            os.path.join("assets", "catacomb_final.png"),
+            os.path.join("assets", f"{name}_final.png") for name in name_candidates
+        ]
+        bg_candidates += [
+            os.path.join("assets", f"{name} final.png") for name in name_candidates
         ]
 
         for bg_path in bg_candidates:

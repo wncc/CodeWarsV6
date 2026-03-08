@@ -12,7 +12,9 @@ SERVER_HOST = "192.168.56.1"  # Change to your server IP
 # =============================================================================
 # MAP SETTINGS
 # =============================================================================
-DEFAULT_MAP = "catacombs"
+MAP_OPTIONS = ["catacombs", "outpost"]
+ACTIVE_MAP_INDEX = 1  # 0=catacombs, 1=outpost
+DEFAULT_MAP = MAP_OPTIONS[ACTIVE_MAP_INDEX]
 GRID_SIZE = 16  # Each grid cell is 16x16 pixels
 
 # =============================================================================
