@@ -7,13 +7,15 @@ All game parameters in one place for easy tuning and balancing
 # NETWORK SETTINGS
 # =============================================================================
 SERVER_PORT = 5555
-SERVER_HOST = "10.51.19.103"  # Change to your server IP
+SERVER_HOST = "192.168.56.1"  # Change to your server IP
 
 # =============================================================================
 # MAP SETTINGS
 # =============================================================================
-DEFAULT_MAP = "catacombs"
-GRID_SIZE = 10  # Each grid cell is 10x10 pixels
+MAP_OPTIONS = ["catacombs", "outpost"]
+ACTIVE_MAP_INDEX = 0  # 0=catacombs, 1=outpost
+DEFAULT_MAP = MAP_OPTIONS[ACTIVE_MAP_INDEX]
+GRID_SIZE = 16  # Each grid cell is 16x16 pixels
 
 # =============================================================================
 # PLAYER/TANK SETTINGS
@@ -23,6 +25,8 @@ TANK_SPEED = 3.0
 TANK_ROTATION_SPEED = 0.04
 TANK_VISUAL_RADIUS = 7.5
 TANK_COLLISION_RADIUS = 6  # Smaller to prevent getting stuck
+PLAYER_HITBOX_WIDTH = 40.0
+PLAYER_HITBOX_HEIGHT = 40.0
 
 # Aiming
 AIM_ROTATION_SPEED = 0.08  # Radians per frame
@@ -78,7 +82,7 @@ BULLET_VISUAL_RADIUS = 5
 WEAPON_STATS = {
     0: {
         "name": "AK47",
-        "damage": 10,
+        "damage": 20,
         "accuracy": 4,
         "reload_time": 2.5,
         "melee": 30,
@@ -138,7 +142,7 @@ WEAPON_STATS = {
     },
     4: {
         "name": "M4",
-        "damage": 14,
+        "damage": 17,
         "accuracy": 2,
         "reload_time": 2.5,
         "melee": 30,
@@ -153,7 +157,7 @@ WEAPON_STATS = {
     },
     5: {
         "name": "M93BA Sniper",
-        "damage": 75,
+        "damage": 200,
         "accuracy": 0,
         "reload_time": 3.5,
         "melee": 35,
@@ -228,7 +232,7 @@ WEAPON_STATS = {
     },
     10: {
         "name": "SPAS-12",
-        "damage": 25,
+        "damage": 50,
         "accuracy": 10,
         "reload_time": 3.5,
         "melee": 40,
@@ -378,6 +382,12 @@ OBSTACLE_BORDER_COLOR = (160, 130, 90)
 GUN_SPAWN_GLOW_COLOR = (255, 215, 0)  # Gold
 GUN_SPAWN_SCALE = 25                   # Size of spawned gun (matching player size)
 
+# Projectile / grenade visual sizes
+BULLET_VISUAL_SIZE = 6
+SAW_BULLET_VISUAL_SIZE = 12
+GRENADE_VISUAL_SIZE = 10
+PROXY_GRENADE_VISUAL_SIZE = 14
+
 # =============================================================================
 # INPUT INDICES
 # =============================================================================
@@ -427,9 +437,11 @@ SAW_LIFETIME = 5                    # Seconds a saw projectile stays alive
 SAW_EXPLOSION_RADIUS = 60.0         # Small frag-like blast on saw timeout
 SAW_EXPLOSION_DAMAGE = 300.0
 SAW_SELF_HIT_ARM_DISTANCE = 35.0    # Must travel this far before it can hurt the shooter
+SAW_FIRE_DELAY = 2.0                # Hold fire key this long before SAW bullet is released
 
 RESPAWN_WITH_FULL_FUEL = True
 RESPAWN_WITH_FULL_HEALTH = True
+RESPAWN_DELAY = 5.0  # Seconds to wait before respawning after death
 
 # Rocket Launcher settings
 ROCKET_LAUNCHER_ID = 15

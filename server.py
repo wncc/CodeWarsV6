@@ -129,12 +129,17 @@ class Server:
         self.world_data[8:, 4] = BULLET_V
         # per-player vertical velocity for gravity (tanks only)
         self.player_vy = np.zeros(8, dtype=np.float64)
+        self.player_stuck_frames = np.zeros(8, dtype=np.int32)
         # screen and tank constants for ground handling
         self.SCREEN_W = 800
         self.SCREEN_H = 600
         self.TANK_RADIUS = config.TANK_VISUAL_RADIUS
         self.COLLISION_RADIUS = config.TANK_COLLISION_RADIUS
-        self.GROUND_Y = self.SCREEN_H - self.COLLISION_RADIUS
+        self.PLAYER_HITBOX_W = float(getattr(config, 'PLAYER_HITBOX_WIDTH', 40.0))
+        self.PLAYER_HITBOX_H = float(getattr(config, 'PLAYER_HITBOX_HEIGHT', 40.0))
+        self.PLAYER_HALF_W = self.PLAYER_HITBOX_W * 0.5
+        self.PLAYER_HALF_H = self.PLAYER_HITBOX_H * 0.5
+        self.GROUND_Y = self.SCREEN_H - self.PLAYER_HALF_H
         self.GRAVITY = config.GRAVITY
         
         # Jetpack system
@@ -149,6 +154,7 @@ class Server:
 
         # Health and score per tank
         self.MAX_HEALTH = config.MAX_HEALTH
+        self.RESPAWN_DELAY = getattr(config, 'RESPAWN_DELAY', 5.0)
         self.world_data[:8, 7] = self.MAX_HEALTH  # health
         self.world_data[:8, 8] = 0.0  # score
 
@@ -157,6 +163,7 @@ class Server:
         
         # Fire rate cooldown per player (in seconds, tracks time since last shot)
         self.player_fire_cooldown = np.zeros(8, dtype=np.float64)
+        self.saw_charge_end_time = np.zeros(8, dtype=np.float64)
         # Reload cooldown per player (in seconds, tracks time remaining for reload)
         self.player_reload_cooldown = np.zeros(8, dtype=np.float64)
         # Track previous frame's input state for edge detection
@@ -182,9 +189,61 @@ class Server:
         # Update screen dimensions based on loaded map
         self.SCREEN_W = self.GRID_W * self.GRID_SIZE
         self.SCREEN_H = self.GRID_H * self.GRID_SIZE
+        self.GROUND_Y = self.SCREEN_H - self.PLAYER_HALF_H
+
+        # Build safe spawn positions from map geometry so players never spawn outside terrain.
+        self._rebuild_spawn_candidates()
         
         # Convert map to bytes for transmission
         self.collision_map_bytes = self.collision_map.tobytes()
+
+    def _rebuild_spawn_candidates(self):
+        """Collect valid standable points from map collision tiles."""
+        self.spawn_candidates = []
+
+        min_x = self.PLAYER_HALF_W
+        max_x = self.SCREEN_W - self.PLAYER_HALF_W
+        min_y = self.PLAYER_HALF_H
+        max_y = self.SCREEN_H - self.PLAYER_HALF_H
+
+        for gy in range(1, self.GRID_H):
+            for gx in range(self.GRID_W):
+                # 0 = obstacle/floor tile, 1 = passable tile
+                if self.collision_map[gy, gx] != 0:
+                    continue
+                if self.collision_map[gy - 1, gx] != 1:
+                    continue
+
+                x = gx * self.GRID_SIZE + (self.GRID_SIZE // 2)
+                y = gy * self.GRID_SIZE - self.PLAYER_HALF_H
+
+                if x < min_x or x > max_x or y < min_y or y > max_y:
+                    continue
+
+                if not self.is_player_colliding_with_obstacle(x, y):
+                    self.spawn_candidates.append((float(x), float(y)))
+
+    def _get_safe_spawn_position(self):
+        """Return a safe spawn point inside map bounds and away from solid tiles."""
+        if getattr(self, 'spawn_candidates', None):
+            idx = np.random.randint(0, len(self.spawn_candidates))
+            return self.spawn_candidates[idx]
+
+        min_x = int(np.ceil(self.PLAYER_HALF_W))
+        max_x = int(np.floor(self.SCREEN_W - self.PLAYER_HALF_W))
+
+        if max_x <= min_x:
+            return float(self.SCREEN_W // 2), float(max(self.PLAYER_HALF_H, self.SCREEN_H - self.PLAYER_HALF_H))
+
+        for _ in range(64):
+            spawn_x = float(np.random.randint(min_x, max_x + 1))
+            ground_y = self.find_ground_below(spawn_x, 0)
+            spawn_y = float(self.GROUND_Y if ground_y is None else ground_y)
+            spawn_y = float(np.clip(spawn_y, self.PLAYER_HALF_H, self.SCREEN_H - self.PLAYER_HALF_H))
+            if not self.is_player_colliding_with_obstacle(spawn_x, spawn_y):
+                return spawn_x, spawn_y
+
+        return float(self.SCREEN_W // 2), float(np.clip(self.GROUND_Y, self.PLAYER_HALF_H, self.SCREEN_H - self.PLAYER_HALF_H))
 
     def load_map(self, map_name):
         """Load map from maps/ folder or create default if not found"""
@@ -242,26 +301,220 @@ class Server:
                     if dist < radius:
                         return True
         return False
+
+    def is_rect_colliding_with_obstacle(self, cx, cy, half_w, half_h):
+        """Check if axis-aligned rectangle centered at (cx, cy) overlaps any obstacle tile."""
+        left = cx - half_w
+        right = cx + half_w
+        top = cy - half_h
+        bottom = cy + half_h
+
+        min_grid_x = max(0, int(np.floor(left / self.GRID_SIZE)))
+        max_grid_x = min(self.GRID_W - 1, int(np.floor(right / self.GRID_SIZE)))
+        min_grid_y = max(0, int(np.floor(top / self.GRID_SIZE)))
+        max_grid_y = min(self.GRID_H - 1, int(np.floor(bottom / self.GRID_SIZE)))
+
+        for gy in range(min_grid_y, max_grid_y + 1):
+            for gx in range(min_grid_x, max_grid_x + 1):
+                if self.collision_map[gy, gx] != 0:
+                    continue
+                cell_left = gx * self.GRID_SIZE
+                cell_top = gy * self.GRID_SIZE
+                cell_right = cell_left + self.GRID_SIZE
+                cell_bottom = cell_top + self.GRID_SIZE
+                if right > cell_left and left < cell_right and bottom > cell_top and top < cell_bottom:
+                    return True
+        return False
+
+    def is_player_colliding_with_obstacle(self, x, y):
+        return self.is_rect_colliding_with_obstacle(x, y, self.PLAYER_HALF_W, self.PLAYER_HALF_H)
+
+    def _push_player_out_of_obstacle(self, x, y, push_x=0.0, push_y=0.0):
+        """Try to move a player rectangle out of terrain using short directional nudges."""
+        if not self.is_player_colliding_with_obstacle(x, y):
+            return x, y
+
+        directions = []
+        pref_len = np.hypot(push_x, push_y)
+        if pref_len > 1e-6:
+            directions.append((push_x / pref_len, push_y / pref_len))
+        directions.extend([
+            (1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0),
+            (0.707, 0.707), (0.707, -0.707), (-0.707, 0.707), (-0.707, -0.707)
+        ])
+
+        for distance in range(1, self.GRID_SIZE + 6):
+            for dx, dy in directions:
+                test_x = x + dx * distance
+                test_y = y + dy * distance
+                if not self.is_player_colliding_with_obstacle(test_x, test_y):
+                    return test_x, test_y
+        return x, y
+
+    def _distance_point_to_player_hitbox(self, px, py, player_idx):
+        """Distance from point to nearest point on player's rectangle hitbox."""
+        cx = self.world_data[player_idx, 1]
+        cy = self.world_data[player_idx, 2]
+        left = cx - self.PLAYER_HALF_W
+        right = cx + self.PLAYER_HALF_W
+        top = cy - self.PLAYER_HALF_H
+        bottom = cy + self.PLAYER_HALF_H
+        nearest_x = max(left, min(px, right))
+        nearest_y = max(top, min(py, bottom))
+        return float(np.hypot(px - nearest_x, py - nearest_y))
+
+    def _point_hits_player_hitbox(self, px, py, player_idx, padding=0.0):
+        cx = self.world_data[player_idx, 1]
+        cy = self.world_data[player_idx, 2]
+        return (
+            (cx - self.PLAYER_HALF_W - padding) <= px <= (cx + self.PLAYER_HALF_W + padding)
+            and (cy - self.PLAYER_HALF_H - padding) <= py <= (cy + self.PLAYER_HALF_H + padding)
+        )
+
+    def _push_out_of_obstacle(self, x, y, radius, push_x=0.0, push_y=0.0):
+        """Try to move a grenade out of solid geometry using small radial offsets."""
+        if not self.is_colliding_with_obstacle(x, y, radius):
+            return x, y
+
+        directions = []
+        pref_len = np.hypot(push_x, push_y)
+        if pref_len > 1e-6:
+            directions.append((push_x / pref_len, push_y / pref_len))
+        directions.extend([
+            (1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0),
+            (0.707, 0.707), (0.707, -0.707), (-0.707, 0.707), (-0.707, -0.707)
+        ])
+
+        for distance in range(1, self.GRID_SIZE + 3):
+            for dx, dy in directions:
+                test_x = x + dx * distance
+                test_y = y + dy * distance
+                if not self.is_colliding_with_obstacle(test_x, test_y, radius):
+                    return test_x, test_y
+
+        return x, y
+
+    def _update_bouncy_grenade(self, grenade_slot, radius=4.0):
+        """Stepwise movement with bounce, rolling friction, and anti-stuck resolution."""
+        x = self.world_data[grenade_slot, 1]
+        y = self.world_data[grenade_slot, 2]
+        vx = self.world_data[grenade_slot, 4]
+        vy = self.world_data[grenade_slot, 5] + self.GRAVITY
+
+        wall_bounce = 0.10
+        floor_bounce = 0.10
+        roll_friction = 0.95
+
+        speed = max(abs(vx), abs(vy), 1.0)
+        steps = min(8, max(1, int(np.ceil(speed / 4.0))))
+        dx = vx / steps
+        dy = vy / steps
+
+        hit_horizontal = False
+        hit_vertical = False
+
+        for _ in range(steps):
+            next_x = x + dx
+            if self.is_colliding_with_obstacle(next_x, y, radius):
+                hit_horizontal = True
+                vx = -vx * wall_bounce
+                dx = vx / steps
+                x, y = self._push_out_of_obstacle(x, y, radius, push_x=np.sign(vx), push_y=0.0)
+            else:
+                x = next_x
+
+            next_y = y + dy
+            if self.is_colliding_with_obstacle(x, next_y, radius):
+                hit_vertical = True
+                falling = vy > 0.0
+                vy = -vy * (floor_bounce if falling else wall_bounce)
+                if falling:
+                    vx *= roll_friction
+                dy = vy / steps
+                x, y = self._push_out_of_obstacle(x, y, radius, push_x=0.0, push_y=-np.sign(vy if vy != 0 else 1.0))
+            else:
+                y = next_y
+
+        on_ground = self.is_colliding_with_obstacle(x, y + 1.5, radius)
+        if on_ground:
+            vx *= 0.97
+            if abs(vx) < 0.08:
+                vx = 0.0
+            if abs(vy) < 0.35:
+                vy = 0.0
+
+        if not hasattr(self, 'grenade_stuck_frames'):
+            self.grenade_stuck_frames = {}
+
+        if (hit_horizontal or hit_vertical) and abs(vx) < 0.12 and abs(vy) < 0.12 and self.is_colliding_with_obstacle(x, y, radius):
+            self.grenade_stuck_frames[grenade_slot] = self.grenade_stuck_frames.get(grenade_slot, 0) + 1
+        else:
+            self.grenade_stuck_frames[grenade_slot] = 0
+
+        if self.grenade_stuck_frames.get(grenade_slot, 0) > 3:
+            # Nudge upward and sideways so grenades never stay embedded in corners.
+            nudge = -1.0 if (grenade_slot % 2 == 0) else 1.0
+            x, y = self._push_out_of_obstacle(x + nudge * 1.5, y - 2.0, radius, push_x=nudge, push_y=-1.0)
+            vx = nudge * max(0.8, abs(vx) + 0.5)
+            vy = -1.6
+            self.grenade_stuck_frames[grenade_slot] = 0
+
+        self.world_data[grenade_slot, 1] = x
+        self.world_data[grenade_slot, 2] = y
+        self.world_data[grenade_slot, 4] = vx
+        self.world_data[grenade_slot, 5] = vy
+
+    def _update_non_bouncy_grenade(self, grenade_slot, radius=4.0):
+        """Stepwise movement without bounce; grenade stops on first collision."""
+        x = self.world_data[grenade_slot, 1]
+        y = self.world_data[grenade_slot, 2]
+        vx = self.world_data[grenade_slot, 4]
+        vy = self.world_data[grenade_slot, 5]
+
+        steps = max(1, int(np.ceil(max(abs(vx), abs(vy), 1.0))))
+        dx = vx / steps
+        dy = vy / steps
+
+        for _ in range(steps):
+            next_x = x + dx
+            next_y = y + dy
+            if self.is_colliding_with_obstacle(next_x, next_y, radius):
+                # Keep grenade just outside geometry and fully stop it.
+                x, y = self._push_out_of_obstacle(x, y, radius, push_x=-np.sign(dx), push_y=-np.sign(dy if dy != 0 else 1.0))
+                vx = 0.0
+                vy = 0.0
+                break
+            x = next_x
+            y = next_y
+
+        x = float(np.clip(x, radius, self.SCREEN_W - radius))
+        y = float(np.clip(y, radius, self.SCREEN_H - radius))
+
+        self.world_data[grenade_slot, 1] = x
+        self.world_data[grenade_slot, 2] = y
+        self.world_data[grenade_slot, 4] = vx
+        self.world_data[grenade_slot, 5] = vy
     
     def find_ground_below(self, x, y):
-        """Find the y-coordinate of the first obstacle below position (x, y)"""
-        grid_x = int(x / self.GRID_SIZE)
-        start_grid_y = int(y / self.GRID_SIZE)
-        
-        if grid_x < 0 or grid_x >= self.GRID_W:
-            return self.GROUND_Y
-        
-        # If player is above screen, start search from top
+        """Find standable center-y below a player rectangle centered at (x, y)."""
+        left_x = x - self.PLAYER_HALF_W
+        right_x = x + self.PLAYER_HALF_W
+        min_grid_x = max(0, int(np.floor(left_x / self.GRID_SIZE)))
+        max_grid_x = min(self.GRID_W - 1, int(np.floor(right_x / self.GRID_SIZE)))
+
+        if min_grid_x > max_grid_x:
+            return None
+
+        feet_y = y + self.PLAYER_HALF_H
+        start_grid_y = int(np.floor(feet_y / self.GRID_SIZE))
         if start_grid_y < 0:
             start_grid_y = -1
-        
-        # Search downward for first obstacle
+
         for gy in range(start_grid_y + 1, self.GRID_H):
-            if self.collision_map[gy, grid_x] == 0:
-                # Found obstacle, return top of this cell minus collision radius
-                return gy * self.GRID_SIZE - self.COLLISION_RADIUS
-        
-        return self.GROUND_Y
+            if np.any(self.collision_map[gy, min_grid_x:max_grid_x + 1] == 0):
+                return gy * self.GRID_SIZE - self.PLAYER_HALF_H
+
+        return None
     
     def _get_barrel_distance(self, weapon_id):
         """Get distance from player center to gun barrel tip for bullet spawning"""
@@ -317,6 +570,7 @@ class Server:
     def run_game(self):
         MAX_BULLET_DIST = config.MAX_BULLET_DISTANCE
         SAW_WEAPON_ID = config.SAW_WEAPON_ID
+        SAW_FIRE_DELAY = getattr(config, 'SAW_FIRE_DELAY', 2.0)
         SAW_LIFETIME = config.SAW_LIFETIME
         SAW_EXPLOSION_RADIUS = config.SAW_EXPLOSION_RADIUS
         SAW_EXPLOSION_DAMAGE = config.SAW_EXPLOSION_DAMAGE
@@ -352,67 +606,32 @@ class Server:
                 self.grenade_fuse_timers = {}
             for g in range(48, 55):
                 if self.world_data[g, 0] == 1:
-                    # generic physics common to all grenades
-                    self.world_data[g, 1] += self.world_data[g, 4]  # x += vx
-                    self.world_data[g, 2] += self.world_data[g, 5]  # y += vy
-                    self.world_data[g, 5] += self.GRAVITY          # gravity
-                    
                     grenade_type = int(self.world_data[g, 10])
-                    gx, gy = self.world_data[g, 1], self.world_data[g, 2]
                     blast_radius = self.world_data[g, 6]
                     damage = self.world_data[g, 7]
-
-                    # handle ground collision for all grenades
-                    ground_y = self.find_ground_below(gx, gy)
-                    if gy >= ground_y:
-                        self.world_data[g, 2] = ground_y
-                        self.world_data[g, 4] = 0
-                        self.world_data[g, 5] = 0
+                    if grenade_type == 2:
+                        self._update_non_bouncy_grenade(g, radius=4.0)
+                    else:
+                        self._update_bouncy_grenade(g, radius=4.0)
+                    gx, gy = self.world_data[g, 1], self.world_data[g, 2]
 
                     if grenade_type == 1:      # normal timed grenade with bounce physics
                         if g in self.grenade_fuse_timers:
                             self.grenade_fuse_timers[g] -= 1.0 / config.SERVER_FPS
-                        
-                        # Bounce physics - check wall collisions
-                        BOUNCE_DAMPING = 0.7  # Energy loss on bounce
-                        GROUND_FRICTION = 0.95  # Friction when rolling on ground
-                        
-                        # Check horizontal wall collision
-                        if self.is_colliding_with_obstacle(gx, gy, 4):
-                            # Reverse horizontal velocity and dampen
-                            self.world_data[g, 4] *= -BOUNCE_DAMPING
-                            # Push grenade out of obstacle
-                            self.world_data[g, 1] -= self.world_data[g, 4] * 2
-                        
-                        # Check if on ground
-                        on_ground = (gy >= ground_y - 2)
-                        if on_ground:
-                            # Apply ground friction to horizontal velocity
-                            self.world_data[g, 4] *= GROUND_FRICTION
-                            # If velocity very small, stop completely
-                            if abs(self.world_data[g, 4]) < 0.5:
-                                self.world_data[g, 4] = 0
-                        
-                        # Check vertical bounce (hitting ground from above)
-                        if self.world_data[g, 5] > 0 and on_ground:
-                            # Bounce up with dampening
-                            self.world_data[g, 5] *= -BOUNCE_DAMPING
-                            # If bounce is too weak, stop bouncing
-                            if abs(self.world_data[g, 5]) < 2:
-                                self.world_data[g, 5] = 0
-                        
+
                         if g in self.grenade_fuse_timers and self.grenade_fuse_timers[g] <= 0:
                             # explode
                             for t in range(8):
                                 if self.world_data[t, 0] == 1:
-                                    tx, ty = self.world_data[t, 1], self.world_data[t, 2]
-                                    if np.sqrt((tx - gx)**2 + (ty - gy)**2) < blast_radius:
-                                        distance = np.sqrt((tx - gx)**2 + (ty - gy)**2)
+                                    distance = self._distance_point_to_player_hitbox(gx, gy, t)
+                                    if distance < blast_radius:
                                         self.world_data[t, 7] -= self.grenade_damage(distance, max_damage=damage, radius=blast_radius)
                                         if self.world_data[t, 7] <= 0:
-                                            self.respawn(t, delay=0)
+                                            self.respawn(t, delay=self.RESPAWN_DELAY)
                             self.world_data[g, 0] = 0
                             del self.grenade_fuse_timers[g]
+                            if hasattr(self, 'grenade_stuck_frames'):
+                                self.grenade_stuck_frames.pop(g, None)
 
                     elif grenade_type == 2:  # proxy grenade – arms after delay then explodes on contact
                         # decrement whichever timer is active (arming or lifetime)
@@ -429,27 +648,29 @@ class Server:
                                 self.world_data[g, 0] = 0
                                 self.proxy_armed.discard(g)
                                 self.grenade_fuse_timers.pop(g, None)
+                                if hasattr(self, 'grenade_stuck_frames'):
+                                    self.grenade_stuck_frames.pop(g, None)
                             else:
                                 # check for player contact and detonate if seen
                                 detonated = False
                                 for t in range(8):
                                     if self.world_data[t, 0] == 1:
-                                        tx, ty = self.world_data[t, 1], self.world_data[t, 2]
-                                        if np.sqrt((tx - gx)**2 + (ty - gy)**2) < blast_radius/3:
+                                        if self._distance_point_to_player_hitbox(gx, gy, t) < blast_radius / 3.0:
                                             detonated = True
                                             break
                                 if detonated:
                                     for t in range(8):
                                         if self.world_data[t, 0] == 1:
-                                            tx, ty = self.world_data[t, 1], self.world_data[t, 2]
-                                            distance = np.sqrt((tx - gx)**2 + (ty - gy)**2)
+                                            distance = self._distance_point_to_player_hitbox(gx, gy, t)
                                             if distance < blast_radius:
                                                 self.world_data[t, 7] -= self.grenade_damage(distance, max_damage=damage, radius=blast_radius)
                                                 if self.world_data[t, 7] <= 0:
-                                                    self.respawn(t, delay=0)
+                                                    self.respawn(t, delay=self.RESPAWN_DELAY)
                                     self.world_data[g, 0] = 0
                                     self.proxy_armed.discard(g)
                                     self.grenade_fuse_timers.pop(g, None)
+                                    if hasattr(self, 'grenade_stuck_frames'):
+                                        self.grenade_stuck_frames.pop(g, None)
                         else:
                             # still in arming phase
                             if g in self.grenade_fuse_timers and self.grenade_fuse_timers[g] <= 0:
@@ -457,28 +678,6 @@ class Server:
                                 self.proxy_armed.add(g)
                                 self.grenade_fuse_timers[g] = 45.0
                     elif grenade_type == 3:  # gas grenade - creates persistent damage zone
-                        # Apply same bounce/rolling physics as frag grenade
-                        BOUNCE_DAMPING = 0.7
-                        GROUND_FRICTION = 0.95
-
-                        # Check horizontal wall collision
-                        if self.is_colliding_with_obstacle(gx, gy, 4):
-                            self.world_data[g, 4] *= -BOUNCE_DAMPING
-                            self.world_data[g, 1] -= self.world_data[g, 4] * 2
-
-                        # Check if on ground
-                        on_ground = (gy >= ground_y - 2)
-                        if on_ground:
-                            self.world_data[g, 4] *= GROUND_FRICTION
-                            if abs(self.world_data[g, 4]) < 0.5:
-                                self.world_data[g, 4] = 0
-
-                        # Check vertical bounce
-                        if self.world_data[g, 5] > 0 and on_ground:
-                            self.world_data[g, 5] *= -BOUNCE_DAMPING
-                            if abs(self.world_data[g, 5]) < 2:
-                                self.world_data[g, 5] = 0
-
                         if g in self.grenade_fuse_timers:
                             self.grenade_fuse_timers[g] -= 1.0 / config.SERVER_FPS
                             if self.grenade_fuse_timers[g] <= 0:
@@ -497,6 +696,8 @@ class Server:
                                 print(f"[SERVER] Gas effect created at ({gx:.1f}, {gy:.1f}) with radius {blast_radius}, damage {damage}/frame")
                                 self.world_data[g, 0] = 0
                                 del self.grenade_fuse_timers[g]
+                                if hasattr(self, 'grenade_stuck_frames'):
+                                    self.grenade_stuck_frames.pop(g, None)
             
             # --- Process active gas effects ---
             effects_to_remove = []
@@ -507,15 +708,14 @@ class Server:
                 # Apply damage to players in the gas zone
                 for t in range(8):
                     if self.world_data[t, 0] == 1:
-                        tx, ty = self.world_data[t, 1], self.world_data[t, 2]
-                        distance = np.sqrt((tx - effect['x'])**2 + (ty - effect['y'])**2)
+                        distance = self._distance_point_to_player_hitbox(effect['x'], effect['y'], t)
                         if distance < effect['radius']:
-                            self.world_data[t, 7] -= (effect['damage']/distance)
+                            self.world_data[t, 7] -= (effect['damage'] / max(distance, 1.0))
                             
                             # Check if player died
                             if self.world_data[t, 7] <= 0:
                                 print(f"[SERVER] Player {t} killed by gas grenade")
-                                self.respawn(t, delay=0)
+                                self.respawn(t, delay=self.RESPAWN_DELAY)
                 
                 # Remove effect if duration expired
                 if effect['duration'] <= 0:
@@ -533,14 +733,11 @@ class Server:
                 new_x = old_x + horizontal_move[i]
                 
                 # Check if currently colliding
-                currently_colliding = self.is_colliding_with_obstacle(old_x, self.world_data[i, 2], self.COLLISION_RADIUS)
-                will_collide = self.is_colliding_with_obstacle(new_x, self.world_data[i, 2], self.COLLISION_RADIUS)
+                currently_colliding = self.is_player_colliding_with_obstacle(old_x, self.world_data[i, 2])
+                will_collide = self.is_player_colliding_with_obstacle(new_x, self.world_data[i, 2])
                 
-                # Allow movement if: not colliding after, OR currently stuck and trying to move away
-                if not will_collide or (currently_colliding and not will_collide):
-                    self.world_data[i, 1] = new_x
-                elif currently_colliding:
-                    # Already stuck, allow any movement to try to escape
+                # Only accept horizontal movement when destination is non-colliding.
+                if not will_collide:
                     self.world_data[i, 1] = new_x
             
             # Aim control using all 4 arrow keys for continuous rotation
@@ -610,26 +807,66 @@ class Server:
                 # Check collision with obstacles below
                 if self.player_vy[i] > 0:  # falling down
                     ground_y = self.find_ground_below(self.world_data[i, 1], old_y)
-                    if new_y >= ground_y:
+                    if ground_y is not None and new_y >= ground_y:
                         self.world_data[i, 2] = ground_y
                         self.player_vy[i] = 0
                     else:
                         self.world_data[i, 2] = new_y
                 else:  # moving up
                     # Check collision when moving up
-                    currently_colliding = self.is_colliding_with_obstacle(self.world_data[i, 1], old_y, self.COLLISION_RADIUS)
-                    will_collide = self.is_colliding_with_obstacle(self.world_data[i, 1], new_y, self.COLLISION_RADIUS)
+                    currently_colliding = self.is_player_colliding_with_obstacle(self.world_data[i, 1], old_y)
+                    will_collide = self.is_player_colliding_with_obstacle(self.world_data[i, 1], new_y)
                     
-                    if not will_collide or currently_colliding:
-                        # Allow upward movement if not colliding or already stuck
+                    if not will_collide:
+                        # Only allow upward movement into free space.
                         self.world_data[i, 2] = new_y
                     else:
                         self.player_vy[i] = 0
             
             # clamp horizontal position to screen
-            self.world_data[:8, 1] = np.clip(self.world_data[:8, 1], self.TANK_RADIUS, self.SCREEN_W - self.TANK_RADIUS)
-            # clamp vertical position to prevent going too far up
-            self.world_data[:8, 2] = np.clip(self.world_data[:8, 2], self.TANK_RADIUS, self.SCREEN_H)
+            self.world_data[:8, 1] = np.clip(self.world_data[:8, 1], self.PLAYER_HALF_W, self.SCREEN_W - self.PLAYER_HALF_W)
+            # clamp vertical position only at top; bottom is handled by fall death.
+            self.world_data[:8, 2] = np.maximum(self.world_data[:8, 2], self.PLAYER_HALF_H)
+
+            # Players that fall out below the map die and immediately respawn.
+            fall_kill_y = self.SCREEN_H + self.PLAYER_HALF_H
+            for i in range(8):
+                if self.world_data[i, 0] == 0:
+                    continue
+                if self.world_data[i, 2] > fall_kill_y:
+                    self.world_data[i, 7] = 0
+                    self.respawn(i, delay=self.RESPAWN_DELAY)
+
+            # Resolve any tank that is still embedded in terrain.
+            for i in range(8):
+                if self.world_data[i, 0] == 0:
+                    continue
+
+                x = self.world_data[i, 1]
+                y = self.world_data[i, 2]
+                if not self.is_player_colliding_with_obstacle(x, y):
+                    self.player_stuck_frames[i] = 0
+                    continue
+
+                # Try a local push-out first to preserve nearby position.
+                push_x = horizontal_move[i]
+                push_y = -1.0 if self.player_vy[i] >= 0 else self.player_vy[i]
+                x, y = self._push_player_out_of_obstacle(x, y, push_x=push_x, push_y=push_y)
+                x = float(np.clip(x, self.PLAYER_HALF_W, self.SCREEN_W - self.PLAYER_HALF_W))
+                y = float(np.clip(y, self.PLAYER_HALF_H, self.SCREEN_H - self.PLAYER_HALF_H))
+                self.world_data[i, 1] = x
+                self.world_data[i, 2] = y
+
+                if self.is_player_colliding_with_obstacle(x, y):
+                    self.player_stuck_frames[i] += 1
+                    if self.player_stuck_frames[i] > 10:
+                        spawn_x, spawn_y = self._get_safe_spawn_position()
+                        self.world_data[i, 1] = spawn_x
+                        self.world_data[i, 2] = spawn_y
+                        self.player_vy[i] = 0
+                        self.player_stuck_frames[i] = 0
+                else:
+                    self.player_stuck_frames[i] = 0
 
             # Store bullet old positions before movement for interpolated collision detection
             bullet_old_positions = np.zeros((40, 2), dtype=np.float64)  # 40 bullets, (x, y)
@@ -688,8 +925,7 @@ class Server:
                             for t in range(8):
                                 if self.world_data[t, 0] == 0:
                                     continue
-                                tx, ty = self.world_data[t, 1], self.world_data[t, 2]
-                                distance = np.sqrt((tx - sx)**2 + (ty - sy)**2)
+                                distance = self._distance_point_to_player_hitbox(sx, sy, t)
                                 if distance < SAW_EXPLOSION_RADIUS:
                                     self.world_data[t, 7] -= self.grenade_damage(
                                         distance,
@@ -699,7 +935,7 @@ class Server:
                                     if self.world_data[t, 7] <= 0:
                                         if 0 <= owner < 8:
                                             self.world_data[owner, 8] += 1
-                                        self.respawn(t, delay=0)
+                                        self.respawn(t, delay=self.RESPAWN_DELAY)
                             self.world_data[b, 0] = 0
                             self.saw_bullet_timers.pop(b, None)
                     else:
@@ -728,9 +964,7 @@ class Server:
                                     continue
                                 if player_idx == owner:
                                     continue
-                                tx, ty = self.world_data[player_idx, 1], self.world_data[player_idx, 2]
-                                distance = np.sqrt((tx - check_x)**2 + (ty - check_y)**2)
-                                if distance < config.BULLET_HIT_RADIUS:
+                                if self._point_hits_player_hitbox(check_x, check_y, player_idx, padding=2.0):
                                     player_hit = True
                                     sx, sy = check_x, check_y
                                     break
@@ -741,8 +975,7 @@ class Server:
                             for t in range(8):
                                 if self.world_data[t, 0] == 0:
                                     continue
-                                tx, ty = self.world_data[t, 1], self.world_data[t, 2]
-                                distance = np.sqrt((tx - sx)**2 + (ty - sy)**2)
+                                distance = self._distance_point_to_player_hitbox(sx, sy, t)
                                 if distance < config.ROCKET_EXPLOSION_RADIUS:
                                     self.world_data[t, 7] -= self.grenade_damage(
                                         distance,
@@ -752,20 +985,22 @@ class Server:
                                     if self.world_data[t, 7] <= 0:
                                         if 0 <= owner < 8:
                                             self.world_data[owner, 8] += 1
-                                        self.respawn(t, delay=0)
+                                        self.respawn(t, delay=self.RESPAWN_DELAY)
                         
                         # Deactivate rocket if it hit something
                         if wall_hit or player_hit:
                             self.world_data[b, 0] = 0
 
-            # Deactivate bullets that traveled too far (bullet slots only: 8-47)
-            bullet_distances = self.world_data[8:48, 5]
-            bullet_active = self.world_data[8:48, 0]
-            bullet_weapon_ids = self.world_data[8:48, 10].astype(np.int32)
-            non_saw_mask = bullet_weapon_ids != SAW_WEAPON_ID
-            too_far_mask = bullet_distances > MAX_BULLET_DIST
-            deactivate_mask = non_saw_mask & too_far_mask
-            self.world_data[8:48, 0] = np.where(deactivate_mask, 0, bullet_active)
+            # Deactivate bullets based on the firing weapon's effective range.
+            for b in range(8, 48):
+                if self.world_data[b, 0] != 1:
+                    continue
+                weapon_id = int(self.world_data[b, 10])
+                effective_range = MAX_BULLET_DIST
+                if weapon_id in WEAPONS:
+                    effective_range = float(WEAPONS[weapon_id].effective_range)
+                if self.world_data[b, 5] > effective_range:
+                    self.world_data[b, 0] = 0
 
             # Cleanup timers for any saw bullets that were deactivated this frame.
             for b in list(self.saw_bullet_timers.keys()):
@@ -796,8 +1031,37 @@ class Server:
                             weapon.reload()
 
             # create bullets (space = index 7)
+            for idx in range(8):
+                # Cancel SAW charge when player is dead.
+                if self.world_data[idx, 0] != 1:
+                    self.saw_charge_end_time[idx] = 0.0
+                    continue
+                current_weapon = self.player_inventories[idx].get_current_gun()
+                # Cancel SAW charge if player switched away from SAW.
+                if current_weapon is None or current_weapon.gun_id != SAW_WEAPON_ID:
+                    self.saw_charge_end_time[idx] = 0.0
+                    continue
+
+                # Tap-to-charge: start SAW charge only on shoot key rising edge.
+                if (
+                    self.player_inputs[idx, 7] == 1
+                    and self.previous_inputs[idx, 7] == 0
+                    and self.saw_charge_end_time[idx] <= 0.0
+                    and self.player_reload_cooldown[idx] <= 0
+                    and self.player_fire_cooldown[idx] <= 0
+                    and current_weapon.can_shoot()
+                ):
+                    self.saw_charge_end_time[idx] = current_time + SAW_FIRE_DELAY
+
             shooting_id = np.where(self.player_inputs[:, 7] == 1)[0]
+            saw_ready_id = np.where(
+                (self.saw_charge_end_time > 0.0)
+                & (self.saw_charge_end_time <= current_time)
+            )[0]
+            shooting_id = np.unique(np.concatenate((shooting_id, saw_ready_id)))
             for idx in shooting_id:
+                if self.world_data[idx, 0] != 1:
+                    continue
                 weapon = self.player_inventories[idx].get_current_gun()
                 
                 if weapon is None:
@@ -805,13 +1069,23 @@ class Server:
                 
                 # Check if currently reloading
                 if self.player_reload_cooldown[idx] > 0:
+                    if weapon.gun_id == SAW_WEAPON_ID:
+                        self.saw_charge_end_time[idx] = 0.0
                     continue
                 
                 # Check fire cooldown and ammo
                 if self.player_fire_cooldown[idx] > 0:
                     continue
+
+                if weapon.gun_id == SAW_WEAPON_ID:
+                    if self.saw_charge_end_time[idx] <= 0.0:
+                        self.saw_charge_end_time[idx] = current_time + SAW_FIRE_DELAY
+                        continue
+                    if current_time < self.saw_charge_end_time[idx]:
+                        continue
                 
                 if not weapon.can_shoot():
+                    self.saw_charge_end_time[idx] = 0.0
                     # Auto reload if out of ammo
                     if weapon.total_ammo > 0:
                         self.player_reload_cooldown[idx] = weapon.reload_time
@@ -863,6 +1137,7 @@ class Server:
                         bullets_spawned += 1
                 
                 if bullets_spawned > 0:
+                    self.saw_charge_end_time[idx] = 0.0
                     # Set cooldown based on weapon's rate of fire
                     self.player_fire_cooldown[idx] = weapon.rate_of_fire
                     # Immediately sync ammo to world_data after shooting
@@ -905,15 +1180,13 @@ class Server:
                     ):
                         # Prevent instant self-kill right at launch.
                         continue
-                    tx, ty = self.world_data[t, 1], self.world_data[t, 2]
-                    dist = np.sqrt((tx - bx)**2 + (ty - by)**2)
-                    if dist < config.BULLET_HIT_RADIUS:
+                    if self._point_hits_player_hitbox(bx, by, t, padding=2.0):
                         if bullet_weapon_id == SAW_WEAPON_ID:
                             # Saw projectile pierces and kills everything it touches.
                             self.world_data[t, 7] = 0
                             if 0 <= owner < 8:
                                 self.world_data[owner, 8] += 1
-                            self.respawn(t, delay=0)
+                            self.respawn(t, delay=self.RESPAWN_DELAY)
                             continue
                         else:
                             # Normal hit - apply damage once and consume bullet.
@@ -922,7 +1195,7 @@ class Server:
                             if self.world_data[t, 7] <= 0:
                                 if 0 <= owner < 8:
                                     self.world_data[owner, 8] += 1
-                                self.respawn(t, delay=0)
+                                self.respawn(t, delay=self.RESPAWN_DELAY)
                             break
                 
                 # remove bullet after processing all potential hits
@@ -976,16 +1249,16 @@ class Server:
             self.player_respawn_cooldown[tank_index] = delay
             self.world_data[tank_index, 0] = 0  # mark as dead during respawn delay
             return
-        
-        spawn_x = np.random.randint(self.TANK_RADIUS, self.SCREEN_W - self.TANK_RADIUS)
-        # Start from top and find first valid ground
-        ground_y = self.find_ground_below(spawn_x, 0)
+
+        spawn_x, spawn_y = self._get_safe_spawn_position()
         self.world_data[tank_index, 1] = spawn_x
-        self.world_data[tank_index, 2] = ground_y
+        self.world_data[tank_index, 2] = spawn_y
         self.world_data[tank_index, 0] = 1  # mark as alive
         # reset vertical velocity
         if hasattr(self, 'player_vy'):
             self.player_vy[tank_index] = 0
+        if hasattr(self, 'player_stuck_frames'):
+            self.player_stuck_frames[tank_index] = 0
         # reset fuel to full
         if hasattr(self, 'player_fuel'):
             self.player_fuel[tank_index] = self.MAX_FUEL
@@ -993,6 +1266,12 @@ class Server:
         # reset health on respawn
         if hasattr(self, 'MAX_HEALTH'):
             self.world_data[tank_index, 7] = self.MAX_HEALTH
+        # reset grenade selection and counts on respawn
+        if hasattr(self, 'grenade_data'):
+            self.grenade_data[tank_index, 0] = 1
+            self.grenade_data[tank_index, 1] = config.FRAG_GRENADE_COUNT
+            self.grenade_data[tank_index, 2] = config.PROXY_GRENADE_COUNT
+            self.grenade_data[tank_index, 3] = config.GAS_GREANADE_COUNT
 
     def add_players(self):
         while True:

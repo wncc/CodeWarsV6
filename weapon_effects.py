@@ -182,11 +182,74 @@ class ImpactEffect:
             particle.draw(screen)
 
 
+class GrenadeExplosionEffect:
+    """Animated grenade explosion effect with burst particles and shockwave ring."""
+    def __init__(self, x, y, grenade_type):
+        self.x = x
+        self.y = y
+        self.grenade_type = grenade_type
+        self.particles = []
+        self.lifetime = 0.45
+        self.max_lifetime = 0.45
+        self.alive = True
+
+        burst_colors, particle_count, max_ring_radius = self._get_grenade_style(grenade_type)
+        self.max_ring_radius = max_ring_radius
+
+        for _ in range(particle_count):
+            angle = random.uniform(0, 2 * math.pi)
+            speed = random.uniform(2.5, 6.5)
+            vx = math.cos(angle) * speed
+            vy = math.sin(angle) * speed
+            color = random.choice(burst_colors)
+            size = random.randint(2, 5)
+            lifetime = random.uniform(0.15, 0.4)
+            self.particles.append(Particle(x, y, vx, vy, color, size, lifetime))
+
+    def _get_grenade_style(self, grenade_type):
+        if grenade_type == 2:  # Proxy
+            return ([(255, 255, 220), (255, 120, 80), (255, 200, 120)], 28, 44)
+        if grenade_type == 3:  # Gas
+            return ([(180, 255, 180), (90, 220, 90), (220, 255, 220)], 24, 52)
+        # Frag/default
+        return ([(255, 230, 130), (255, 170, 70), (255, 255, 220)], 32, 50)
+
+    def update(self, dt):
+        self.lifetime -= dt
+        for particle in self.particles:
+            # Light gravity to make the burst feel natural.
+            particle.vy += 0.08
+            particle.update(dt)
+
+        self.particles = [p for p in self.particles if p.alive]
+        if self.lifetime <= 0 and len(self.particles) == 0:
+            self.alive = False
+
+    def draw(self, screen):
+        life_ratio = max(0.0, self.lifetime / self.max_lifetime)
+        ring_progress = 1.0 - life_ratio
+        ring_radius = max(1, int(self.max_ring_radius * ring_progress))
+
+        # Shockwave ring
+        ring_color = (255, 230, 180) if self.grenade_type != 3 else (140, 255, 140)
+        ring_thickness = max(1, int(4 * life_ratio))
+        pygame.draw.circle(screen, ring_color, (int(self.x), int(self.y)), ring_radius, ring_thickness)
+
+        # Bright core flash
+        core_radius = max(1, int(10 * life_ratio))
+        core_color = (255, 255, 240) if self.grenade_type != 3 else (220, 255, 220)
+        pygame.draw.circle(screen, core_color, (int(self.x), int(self.y)), core_radius)
+
+        for particle in self.particles:
+            particle.draw(screen)
+
+
 class WeaponEffectsManager:
     """Manages all weapon visual effects"""
     def __init__(self):
         self.muzzle_flashes = []
         self.impact_effects = []
+        self.grenade_explosions = []
         self.last_shot_time = {}  # Track last shot per player for effects
     
     def add_muzzle_flash(self, x, y, angle, weapon_id):
@@ -198,6 +261,11 @@ class WeaponEffectsManager:
         """Add an impact effect"""
         effect = ImpactEffect(x, y, weapon_id)
         self.impact_effects.append(effect)
+
+    def add_grenade_explosion(self, x, y, grenade_type):
+        """Add a grenade explosion effect."""
+        effect = GrenadeExplosionEffect(x, y, grenade_type)
+        self.grenade_explosions.append(effect)
     
     def update(self, dt):
         """Update all effects"""
@@ -210,6 +278,11 @@ class WeaponEffectsManager:
         for effect in self.impact_effects:
             effect.update(dt)
         self.impact_effects = [e for e in self.impact_effects if e.alive]
+
+        # Update grenade explosion effects
+        for effect in self.grenade_explosions:
+            effect.update(dt)
+        self.grenade_explosions = [e for e in self.grenade_explosions if e.alive]
     
     def draw(self, screen):
         """Draw all effects"""
@@ -220,8 +293,13 @@ class WeaponEffectsManager:
         # Draw muzzle flashes on top
         for flash in self.muzzle_flashes:
             flash.draw(screen)
+
+        # Draw grenade explosions on top for visibility
+        for effect in self.grenade_explosions:
+            effect.draw(screen)
     
     def clear(self):
         """Clear all effects"""
         self.muzzle_flashes.clear()
         self.impact_effects.clear()
+        self.grenade_explosions.clear()

@@ -1,6 +1,7 @@
 import pygame
 import math
 import os
+import config
 
 class WeaponRenderer:
     """Handles visual representation of weapons"""
@@ -167,6 +168,8 @@ class WeaponRenderer:
             is_armed: whether proximity grenade is armed
         """
         grenade_directory = os.path.join("assets", "grenades")
+        grenade_size = config.PROXY_GRENADE_VISUAL_SIZE if grenade_type == 2 else config.GRENADE_VISUAL_SIZE
+        half_size = grenade_size // 2
         
         if sprite_file:
             sprite_path = os.path.join(grenade_directory, sprite_file)
@@ -174,13 +177,12 @@ class WeaponRenderer:
             if os.path.exists(sprite_path):
                 try:
                     sprite = pygame.image.load(sprite_path).convert_alpha()
-                    # Scale grenade sprite to reasonable size (10x10 pixels)
-                    scaled_sprite = pygame.transform.scale(sprite, (10, 10))
-                    screen.blit(scaled_sprite, (x - 5, y - 5))
+                    scaled_sprite = pygame.transform.scale(sprite, (grenade_size, grenade_size))
+                    screen.blit(scaled_sprite, (x - half_size, y - half_size))
                     
                     # Draw indicator for armed proximity grenades
                     if is_armed and grenade_type == 2:
-                        pygame.draw.circle(screen, (255, 0, 0), (int(x), int(y)), 12, 1)
+                        pygame.draw.circle(screen, (255, 0, 0), (int(x), int(y)), grenade_size + 4, 1)
                     return
                 except Exception as e:
                     pass
@@ -192,7 +194,7 @@ class WeaponRenderer:
             3: (200, 200, 50)   # Gas - yellow
         }
         color = color_map.get(grenade_type, (150, 150, 150))
-        pygame.draw.circle(screen, color, (int(x), int(y)), 5)
+        pygame.draw.circle(screen, color, (int(x), int(y)), max(4, half_size))
     
     def draw_grenade_counter(self, screen, grenade_data, player_id, x, y, font):
         """

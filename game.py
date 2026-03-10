@@ -2,6 +2,7 @@ import pygame
 import threading
 import importlib
 import numpy as np
+import os
 from client import Network
 import time
 from weapons import WEAPONS, get_grenade
@@ -20,6 +21,7 @@ class PlayerClient:
             self.screen = pygame.display.set_mode((W, H), pygame.RESIZABLE)
             pygame.display.set_caption("PyTanks")
             self.font = pygame.font.SysFont(None, 24)
+            self.hud_font = pygame.font.SysFont(None, 38)
 
         self.name = script_name if script_name is not None else "Keyboard"
         self.join_server()
@@ -32,9 +34,14 @@ class PlayerClient:
 
         # ---- Rendering-only resources ----
         if self.render_enabled:
-            map_width = self.grid_w * self.grid_size
-            map_height = self.grid_h * self.grid_size
-            self.screen = pygame.display.set_mode((map_width, map_height), pygame.RESIZABLE)
+            self.map_width = self.grid_w * self.grid_size
+            self.map_height = self.grid_h * self.grid_size
+            self.world_surface = pygame.Surface((self.map_width, self.map_height)).convert()
+            self.map_background = self._load_map_background()
+            self.gas_cloud_sprite = self._create_gas_cloud_sprite(256)
+
+            initial_w, initial_h = self._compute_initial_window_size()
+            self.screen = pygame.display.set_mode((initial_w, initial_h), pygame.RESIZABLE)
 
             # Load player sprite frames for animation
             self.player_frames = [
@@ -64,6 +71,7 @@ class PlayerClient:
             self.prev_shooting = np.zeros(8, dtype=bool)
             self.prev_bullets = {}
             self.prev_ammo = {}
+            self.prev_grenades = {}
 
         self.run_game()
 
@@ -100,6 +108,86 @@ class PlayerClient:
         }
         return offsets.get(weapon_id, (0, 0))
 
+    def _load_map_background(self):
+        """Load and scale the map background image to match world dimensions."""
+        map_name = str(config.DEFAULT_MAP).strip().lower()
+        alias_candidates = {
+            "catacombs": ["catacomb", "catacombs"],
+            "outpost": ["outpost"],
+        }
+
+        name_candidates = [map_name] + alias_candidates.get(map_name, [])
+        bg_candidates = [
+            os.path.join("assets", f"{name}_final.png") for name in name_candidates
+        ]
+        bg_candidates += [
+            os.path.join("assets", f"{name} final.png") for name in name_candidates
+        ]
+
+        for bg_path in bg_candidates:
+            if os.path.exists(bg_path):
+                try:
+                    bg = pygame.image.load(bg_path).convert()
+                    return pygame.transform.smoothscale(bg, (self.map_width, self.map_height))
+                except pygame.error:
+                    continue
+
+        return None
+
+    def _create_gas_cloud_sprite(self, size=256):
+        """Create a soft, foggy gas cloud sprite procedurally (no PNG dependency)."""
+        sprite = pygame.Surface((size, size), pygame.SRCALPHA)
+        center = size // 2
+
+        # Layer many translucent circles to create a blurred cloud look.
+        for _ in range(180):
+            angle = np.random.uniform(0, 2 * np.pi)
+            distance = np.random.uniform(0, size * 0.28)
+            cx = int(center + np.cos(angle) * distance)
+            cy = int(center + np.sin(angle) * distance)
+            r = int(np.random.uniform(size * 0.07, size * 0.18))
+
+            # Slight color variation gives a natural toxic cloud feel.
+            g = int(np.random.uniform(175, 235))
+            color = (
+                int(np.random.uniform(70, 120)),
+                g,
+                int(np.random.uniform(50, 95)),
+                int(np.random.uniform(40, 95)),
+            )
+            pygame.draw.circle(sprite, color, (cx, cy), max(2, r))
+
+        # Green center glow (avoid white-looking core).
+        pygame.draw.circle(sprite, (70, 220, 95, 120), (center, center), int(size * 0.23))
+        pygame.draw.circle(sprite, (40, 180, 70, 90), (center, center), int(size * 0.16))
+        return sprite
+
+    def _draw_gas_cloud(self, ex, ey, radius, time_factor):
+        """Draw animated layered gas cloud from the procedural sprite."""
+        if self.gas_cloud_sprite is None:
+            return
+
+        diameter = max(4, int(radius * 2))
+        main = pygame.transform.smoothscale(self.gas_cloud_sprite, (diameter, diameter))
+
+        pulse = 0.92 + 0.08 * np.sin(time_factor * 0.004)
+        pulse_d = max(4, int(diameter * pulse))
+        pulse_layer = pygame.transform.smoothscale(self.gas_cloud_sprite, (pulse_d, pulse_d))
+
+        drift = max(1, int(radius * 0.08))
+        ox = int(np.cos(time_factor * 0.002) * drift)
+        oy = int(np.sin(time_factor * 0.0027) * drift)
+
+        main.set_alpha(185)
+        pulse_layer.set_alpha(145)
+
+        main_rect = main.get_rect(center=(int(ex), int(ey)))
+        pulse_rect = pulse_layer.get_rect(center=(int(ex + ox), int(ey + oy)))
+        self.screen.blit(main, main_rect.topleft)
+        self.screen.blit(pulse_layer, pulse_rect.topleft)
+
+        # Intentionally no ring/outline; cloud-only visual.
+
     def run_game(self):
 
         if self.render_enabled:
@@ -120,6 +208,8 @@ class PlayerClient:
                 for event in pygame.event.get():
                     if event.type == pygame.QUIT:
                         self.running = False
+                    elif event.type == pygame.VIDEORESIZE:
+                        self.screen = pygame.display.set_mode((event.w, event.h), pygame.RESIZABLE)
 
             result = self.server.send(keyboard_input)
 
@@ -228,23 +318,31 @@ class PlayerClient:
                             self.effects_manager.add_impact_effect(prev_x, prev_y, weapon_id)
                 
                 self.prev_bullets = active_bullets
+
+                # Detect grenade explosions (grenade slot disappeared this frame)
+                active_grenades = {}
+                for g in range(48, 55):
+                    if game_world[g, 0] == 1:
+                        active_grenades[g] = (game_world[g, 1], game_world[g, 2], int(game_world[g, 10]))
+
+                for g_id, (prev_x, prev_y, grenade_type) in self.prev_grenades.items():
+                    if g_id not in active_grenades:
+                        self.effects_manager.add_grenade_explosion(prev_x, prev_y, grenade_type)
+
+                self.prev_grenades = active_grenades
             
             if self.render_enabled:
                 self.render(game_world, gun_spawns, gas_data, grenade_data)
 
     def render(self, game_world, gun_spawns, gas_data, grenade_data):
-        # Brown background (open space)
-        self.screen.fill(config.BACKGROUND_COLOR)
-        
-        # Draw collision map obstacles (light brown/yellowish blocks)
-        for gy in range(self.grid_h):
-            for gx in range(self.grid_w):
-                if self.collision_map[gy, gx] == 0:  # obstacle
-                    x = gx * self.grid_size
-                    y = gy * self.grid_size
-                    pygame.draw.rect(self.screen, config.OBSTACLE_COLOR, (x, y, self.grid_size, self.grid_size))
-                    # Add darker border for visibility
-                    pygame.draw.rect(self.screen, config.OBSTACLE_BORDER_COLOR, (x, y, self.grid_size, self.grid_size), 1)
+        display_surface = self.screen
+        self.screen = self.world_surface
+
+        # Draw map art as background; collisions still come from collision_map on server.
+        if self.map_background is not None:
+            self.screen.blit(self.map_background, (0, 0))
+        else:
+            self.screen.fill(config.BACKGROUND_COLOR)
         
         # Draw gun spawns with actual gun images
         for spawn in gun_spawns:
@@ -351,7 +449,7 @@ class PlayerClient:
             fuel_percent = fuel / 100.0
             # Draw fuel bar in top-left corner
             bar_x, bar_y = 10, 10
-            bar_width, bar_height = 200, 20
+            bar_width, bar_height = 620, 52
             # Background (empty)
             pygame.draw.rect(self.screen, (50, 50, 50), (bar_x, bar_y, bar_width, bar_height))
             # Fuel level (cyan color like Mini Militia)
@@ -363,8 +461,8 @@ class PlayerClient:
             # Draw health bar below fuel
             health = game_world[self.ID, 7]
             health_percent = max(0.0, min(1.0, health / 200.0))
-            hbar_x, hbar_y = 10, 40
-            hbar_w, hbar_h = 200, 20
+            hbar_x, hbar_y = 10, bar_y + bar_height + 10
+            hbar_w, hbar_h = 620, 52
             pygame.draw.rect(self.screen, (50, 50, 50), (hbar_x, hbar_y, hbar_w, hbar_h))
             pygame.draw.rect(self.screen, (255, 0, 0), (hbar_x, hbar_y, int(hbar_w * health_percent), hbar_h))
             pygame.draw.rect(self.screen, (255, 255, 255), (hbar_x, hbar_y, hbar_w, hbar_h), 2)
@@ -377,11 +475,13 @@ class PlayerClient:
             
             # Draw weapon name and ammo counter
             weapon = self.player_weapons[self.ID]
-            weapon_name_surf = self.font.render(weapon.name, True, (255, 255, 255))
-            self.screen.blit(weapon_name_surf, (10, 70))
-            self.weapon_renderer.draw_ammo_counter(self.screen, weapon, 10, 95, self.font)
+            weapon_name_y = hbar_y + hbar_h + 12
+            weapon_name_surf = self.hud_font.render(weapon.name, True, (255, 255, 255))
+            self.screen.blit(weapon_name_surf, (10, weapon_name_y))
+            ammo_y = weapon_name_y + 36
+            self.weapon_renderer.draw_ammo_counter(self.screen, weapon, 10, ammo_y, self.hud_font)
             # Draw grenade counter
-            self.weapon_renderer.draw_grenade_counter(self.screen, grenade_data, self.ID, 10, 120, self.font)
+            self.weapon_renderer.draw_grenade_counter(self.screen, grenade_data, self.ID, 10, ammo_y + 36, self.hud_font)
         
         # Draw bullets with trails (Mini Militia style)
         for i in range(8, 48):
@@ -403,8 +503,8 @@ class PlayerClient:
             
             # Draw bullet sprite if available
             if bullet_sprite:
-                # Scale bullet sprite to small size
-                bullet_size = 6
+                # Make SAW projectile intentionally larger for readability.
+                bullet_size = config.SAW_BULLET_VISUAL_SIZE if weapon_id == config.SAW_WEAPON_ID else config.BULLET_VISUAL_SIZE
                 scaled_bullet = pygame.transform.scale(bullet_sprite, (bullet_size, bullet_size))
                 # Rotate bullet to match trajectory
                 angle_degrees = np.degrees(bullet_angle)
@@ -442,16 +542,39 @@ class PlayerClient:
             if len(effect) >= 4:
                 ex, ey, radius, duration = effect
                 if duration > 0:
-                    # Draw semi-transparent green circle for gas
-                    gas_surface = pygame.Surface((int(radius * 2), int(radius * 2)), pygame.SRCALPHA)
-                    pygame.draw.circle(gas_surface, (0, 255, 0, 50), (int(radius), int(radius)), int(radius))
-                    self.screen.blit(gas_surface, (int(ex - radius), int(ey - radius)))
-                    # Draw border
-                    pygame.draw.circle(self.screen, (0, 200, 0, 150), (int(ex), int(ey)), int(radius), 2)
+                    time_factor = time.time() * 1000
+                    self._draw_gas_cloud(ex, ey, radius, time_factor)
+                    
 
         # Draw visual effects (muzzle flashes and impacts)
         self.effects_manager.draw(self.screen)
-        
+
+        self._present_frame(display_surface)
+        self.screen = display_surface
+
+    def _compute_initial_window_size(self):
+        display_info = pygame.display.Info()
+        desktop_w = max(800, display_info.current_w)
+        desktop_h = max(600, display_info.current_h - 80)
+        return min(self.map_width, desktop_w), min(self.map_height, desktop_h)
+
+    def _present_frame(self, display_surface):
+        window_w, window_h = display_surface.get_size()
+
+        if window_w <= 0 or window_h <= 0:
+            return
+
+        scale = min(window_w / self.map_width, window_h / self.map_height)
+        scaled_w = max(1, int(self.map_width * scale))
+        scaled_h = max(1, int(self.map_height * scale))
+
+        # Letterbox the full map so it always fits inside the window.
+        viewport = pygame.transform.smoothscale(self.world_surface, (scaled_w, scaled_h))
+        offset_x = (window_w - scaled_w) // 2
+        offset_y = (window_h - scaled_h) // 2
+
+        display_surface.fill((0, 0, 0))
+        display_surface.blit(viewport, (offset_x, offset_y))
         pygame.display.update()
 
 

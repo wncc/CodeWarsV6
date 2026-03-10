@@ -1,6 +1,7 @@
 import pygame
 import numpy as np
 import os
+import config
 from config import WEAPON_STATS
 
 class MapEditor:
@@ -8,11 +9,20 @@ class MapEditor:
         pygame.init()
         
         # Grid settings (must match server settings)
-        self.CELL_SIZE = 10
-        self.GRID_W = 80  # 800 / 10
-        self.GRID_H = 60  # 600 / 10
+        self.CELL_SIZE = config.GRID_SIZE
+        self.GRID_W = 80
+        self.GRID_H = 60
         self.SCREEN_W = self.GRID_W * self.CELL_SIZE
         self.SCREEN_H = self.GRID_H * self.CELL_SIZE
+        self.UI_PANEL_H = 150
+
+        # View transform (screen-space preview of the full map)
+        self.map_scale = 1.0
+        self.map_offset_x = 0
+        self.map_offset_y = 0
+        self.map_draw_w = self.SCREEN_W
+        self.map_draw_h = self.SCREEN_H
+        self.panel_y = self.SCREEN_H
         
         # Initialize collision map (1 = passable, 0 = obstacle)
         self.collision_map = np.ones((self.GRID_H, self.GRID_W), dtype=np.int32)
@@ -22,9 +32,10 @@ class MapEditor:
         
         # Weapon spawn points: [(x, y, weapon_id), ...]
         self.weapon_spawns = []
-        
-        self.screen = pygame.display.set_mode((self.SCREEN_W, self.SCREEN_H + 100), pygame.RESIZABLE)
+
+        self.screen = pygame.display.set_mode((self.SCREEN_W, self.SCREEN_H + self.UI_PANEL_H), pygame.RESIZABLE)
         pygame.display.set_caption("PyTanks Map Editor")
+        self.map_surface = self._create_map_surface(self.SCREEN_W, self.SCREEN_H)
         
         self.font = pygame.font.SysFont(None, 24)
         self.small_font = pygame.font.SysFont(None, 20)
@@ -33,13 +44,81 @@ class MapEditor:
         self.erasing = False
         self.placing_weapon = False
         self.selected_weapon_id = 0  # Currently selected weapon to place
-        self.current_map_name = "default"
+        self.current_map_name = config.DEFAULT_MAP
+        self.status_message = ""
+
+        # Load default map so editor dimensions match the active runtime map.
+        if not self.load_map(self.current_map_name):
+            self._resize_editor_window()
         
         self.run()
+
+    def _get_desktop_fit_window_size(self):
+        display_info = pygame.display.Info()
+        max_w = max(640, display_info.current_w - 120)
+        max_h = max(520, display_info.current_h - 120)
+        window_w = min(self.SCREEN_W, max_w)
+        window_h = min(self.SCREEN_H + self.UI_PANEL_H, max_h)
+        window_h = max(window_h, self.UI_PANEL_H + 220)
+        return int(window_w), int(window_h)
+
+    def _sync_map_dimensions(self):
+        """Sync grid/screen dimensions to current collision map shape."""
+        self.GRID_H, self.GRID_W = self.collision_map.shape
+        self.SCREEN_W = self.GRID_W * self.CELL_SIZE
+        self.SCREEN_H = self.GRID_H * self.CELL_SIZE
+        self.map_surface = self._create_map_surface(self.SCREEN_W, self.SCREEN_H)
+
+    def _create_map_surface(self, width, height):
+        surface = pygame.Surface((width, height))
+        if pygame.display.get_surface() is not None:
+            surface = surface.convert()
+        return surface
+
+    def _resize_editor_window(self):
+        window_w, window_h = self._get_desktop_fit_window_size()
+        self.screen = pygame.display.set_mode((window_w, window_h), pygame.RESIZABLE)
+
+    def _update_view_transform(self):
+        window_w, window_h = self.screen.get_size()
+        self.panel_y = max(0, window_h - self.UI_PANEL_H)
+
+        map_view_w = window_w
+        map_view_h = max(1, self.panel_y)
+
+        self.map_scale = min(map_view_w / self.SCREEN_W, map_view_h / self.SCREEN_H)
+        self.map_draw_w = max(1, int(self.SCREEN_W * self.map_scale))
+        self.map_draw_h = max(1, int(self.SCREEN_H * self.map_scale))
+
+        self.map_offset_x = (map_view_w - self.map_draw_w) // 2
+        self.map_offset_y = (map_view_h - self.map_draw_h) // 2
+
+    def _screen_to_map(self, screen_x, screen_y):
+        """Convert screen coordinates to map pixel coordinates when inside map viewport."""
+        if screen_y >= self.panel_y:
+            return None
+
+        if screen_x < self.map_offset_x or screen_y < self.map_offset_y:
+            return None
+
+        if screen_x >= self.map_offset_x + self.map_draw_w or screen_y >= self.map_offset_y + self.map_draw_h:
+            return None
+
+        map_x = int((screen_x - self.map_offset_x) / self.map_scale)
+        map_y = int((screen_y - self.map_offset_y) / self.map_scale)
+
+        map_x = max(0, min(self.SCREEN_W - 1, map_x))
+        map_y = max(0, min(self.SCREEN_H - 1, map_y))
+        return map_x, map_y
     
     def save_map(self, filename):
         """Save map to maps/ folder (both collision map and weapon spawns)"""
         import json
+
+        filename = (filename or "").strip()
+        if not filename:
+            filename = self.current_map_name or config.DEFAULT_MAP
+        self.current_map_name = filename
         
         maps_dir = "maps"
         if not os.path.exists(maps_dir):
@@ -53,9 +132,12 @@ class MapEditor:
         spawns_filepath = os.path.join(maps_dir, f"{filename}_spawns.json")
         with open(spawns_filepath, 'w') as f:
             json.dump(self.weapon_spawns, f, indent=2)
-        
-        print(f"Map saved: {collision_filepath}")
-        print(f"Weapon spawns saved: {spawns_filepath} ({len(self.weapon_spawns)} spawns)")
+
+        collision_abspath = os.path.abspath(collision_filepath)
+        spawns_abspath = os.path.abspath(spawns_filepath)
+        self.status_message = f"Saved {filename}"
+        print(f"Map saved: {collision_abspath}")
+        print(f"Weapon spawns saved: {spawns_abspath} ({len(self.weapon_spawns)} spawns)")
         return collision_filepath
     
     def load_map(self, filename):
@@ -67,6 +149,8 @@ class MapEditor:
         
         if os.path.exists(collision_filepath):
             self.collision_map = np.load(collision_filepath)
+            self._sync_map_dimensions()
+            self._resize_editor_window()
             self.current_map_name = filename
             print(f"Map loaded: {collision_filepath}")
             
@@ -121,24 +205,29 @@ class MapEditor:
         
         while running:
             clock.tick(60)
+            self._update_view_transform()
             
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
+                elif event.type == pygame.VIDEORESIZE:
+                    self.screen = pygame.display.set_mode((event.w, event.h), pygame.RESIZABLE)
+                    self._update_view_transform()
                 
                 elif event.type == pygame.MOUSEBUTTONDOWN:
                     mx, my = event.pos[0], event.pos[1]
-                    # Check if click is in grid area
-                    if my < self.SCREEN_H:
+                    map_pos = self._screen_to_map(mx, my)
+                    if map_pos is not None:
+                        map_x, map_y = map_pos
                         if self.placing_weapon and event.button == 1:
                             # Place weapon spawn at click position
-                            self.weapon_spawns.append([mx, my, self.selected_weapon_id])
-                            print(f"Placed {WEAPON_STATS[self.selected_weapon_id]['name']} spawn at ({mx}, {my})")
+                            self.weapon_spawns.append([map_x, map_y, self.selected_weapon_id])
+                            print(f"Placed {WEAPON_STATS[self.selected_weapon_id]['name']} spawn at ({map_x}, {map_y})")
                         elif self.placing_weapon and event.button == 3:
                             # Remove weapon spawn near click
-                            remove_radius = 15
+                            remove_radius = max(15, self.CELL_SIZE)
                             self.weapon_spawns = [s for s in self.weapon_spawns 
-                                                 if not (abs(s[0] - mx) < remove_radius and abs(s[1] - my) < remove_radius)]
+                                                 if not (abs(s[0] - map_x) < remove_radius and abs(s[1] - map_y) < remove_radius)]
                         elif not self.placing_weapon:
                             if event.button == 1:  # Left click - draw obstacles
                                 self.drawing = True
@@ -158,12 +247,12 @@ class MapEditor:
                             selected_map_index -= 1
                         elif event.key == pygame.K_DOWN and selected_map_index < len(available_maps) - 1:
                             selected_map_index += 1
-                        elif event.key == pygame.K_RETURN and available_maps:
+                        elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER) and available_maps:
                             self.load_map(available_maps[selected_map_index])
                             show_map_browser = False
                     elif input_active:
                         # Handle text input
-                        if event.key == pygame.K_RETURN:
+                        if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
                             if input_mode == 'save':
                                 self.save_map(input_text if input_text else "default")
                             elif input_mode == 'load':
@@ -183,6 +272,11 @@ class MapEditor:
                                 input_text += event.unicode
                     else:
                         # Handle commands
+                        mods = pygame.key.get_mods()
+                        if event.key == pygame.K_s and (mods & pygame.KMOD_CTRL):
+                            self.save_map(self.current_map_name)
+                            continue
+
                         if event.key == pygame.K_s:  # Save
                             input_active = True
                             input_mode = 'save'
@@ -220,9 +314,11 @@ class MapEditor:
             # Draw/erase with mouse
             if self.drawing or self.erasing:
                 mx, my = pygame.mouse.get_pos()
-                if my < self.SCREEN_H:  # Only draw in grid area
-                    gx = mx // self.CELL_SIZE
-                    gy = my // self.CELL_SIZE
+                map_pos = self._screen_to_map(mx, my)
+                if map_pos is not None:
+                    map_x, map_y = map_pos
+                    gx = map_x // self.CELL_SIZE
+                    gy = map_y // self.CELL_SIZE
                     if 0 <= gx < self.GRID_W and 0 <= gy < self.GRID_H:
                         self.collision_map[gy, gx] = 0 if self.drawing else 1
             
@@ -232,8 +328,12 @@ class MapEditor:
         pygame.quit()
     
     def render(self, input_active, input_mode, input_text, show_map_browser, available_maps, selected_map_index):
+        self._update_view_transform()
+        window_w, window_h = self.screen.get_size()
+
         # Clear screen
-        self.screen.fill((30, 30, 30))
+        self.screen.fill((25, 25, 25))
+        self.map_surface.fill((30, 30, 30))
         
         # Draw grid
         for gy in range(self.GRID_H):
@@ -247,30 +347,36 @@ class MapEditor:
                 else:
                     color = (40, 40, 40)  # Passable (dark)
                 
-                pygame.draw.rect(self.screen, color, (x, y, self.CELL_SIZE, self.CELL_SIZE))
-                pygame.draw.rect(self.screen, (60, 60, 60), (x, y, self.CELL_SIZE, self.CELL_SIZE), 1)
+                pygame.draw.rect(self.map_surface, color, (x, y, self.CELL_SIZE, self.CELL_SIZE))
+                pygame.draw.rect(self.map_surface, (60, 60, 60), (x, y, self.CELL_SIZE, self.CELL_SIZE), 1)
         
         # Draw weapon spawn markers
         for spawn in self.weapon_spawns:
             x, y, weapon_id = spawn
             # Draw glow circle
-            pygame.draw.circle(self.screen, (255, 215, 0), (int(x), int(y)), 12, 2)
-            pygame.draw.circle(self.screen, (255, 215, 0, 128), (int(x), int(y)), 8)
+            pygame.draw.circle(self.map_surface, (255, 215, 0), (int(x), int(y)), 12, 2)
+            pygame.draw.circle(self.map_surface, (255, 215, 0), (int(x), int(y)), 8)
             # Draw weapon name
             weapon_name = WEAPON_STATS[weapon_id]['name'][:6]  # Truncate long names
             name_surf = self.small_font.render(weapon_name, True, (255, 255, 255))
-            self.screen.blit(name_surf, (int(x) - name_surf.get_width()//2, int(y) + 15))
+            self.map_surface.blit(name_surf, (int(x) - name_surf.get_width()//2, int(y) + 15))
+
+        # Fit full map into the visible map viewport.
+        scaled_map = pygame.transform.smoothscale(self.map_surface, (self.map_draw_w, self.map_draw_h))
+        self.screen.blit(scaled_map, (self.map_offset_x, self.map_offset_y))
         
         # Draw UI panel at bottom
-        panel_y = self.SCREEN_H
-        pygame.draw.rect(self.screen, (50, 50, 50), (0, panel_y, self.SCREEN_W, 100))
+        panel_y = self.panel_y
+        pygame.draw.rect(self.screen, (50, 50, 50), (0, panel_y, window_w, self.UI_PANEL_H))
         
         # Instructions
         mode_indicator = f"[WEAPON MODE: {WEAPON_STATS[self.selected_weapon_id]['name']}]" if self.placing_weapon else "[OBSTACLE MODE]"
         instructions = [
+            "CTRL+S: Quick save current map",
             "W: Toggle weapon mode | LEFT/RIGHT: Select weapon | LEFT CLICK: Place/Draw | RIGHT CLICK: Remove/Erase",
             "S: Save | L: Load | B: Browse | C: Clear | G: Add ground | Q: Quit",
-            f"Map: {self.current_map_name} | Mode: {mode_indicator} | Weapon spawns: {len(self.weapon_spawns)}"
+            f"Map: {self.current_map_name} | Mode: {mode_indicator} | Weapon spawns: {len(self.weapon_spawns)}",
+            f"Status: {self.status_message or 'Ready'}"
         ]
         
         for i, text in enumerate(instructions):
@@ -281,8 +387,8 @@ class MapEditor:
         if show_map_browser:
             browser_w = 400
             browser_h = 400
-            browser_x = (self.SCREEN_W - browser_w) // 2
-            browser_y = (self.SCREEN_H - browser_h) // 2
+            browser_x = (window_w - browser_w) // 2
+            browser_y = max(10, (self.panel_y - browser_h) // 2)
             
             pygame.draw.rect(self.screen, (60, 60, 60), (browser_x, browser_y, browser_w, browser_h))
             pygame.draw.rect(self.screen, (255, 255, 255), (browser_x, browser_y, browser_w, browser_h), 2)
@@ -311,19 +417,15 @@ class MapEditor:
                     self.screen.blit(map_surf, (browser_x + 20, list_y + 5))
                     list_y += 28
         
-        for i, text in enumerate(instructions):
-            surf = self.small_font.render(text, True, (255, 255, 255))
-            self.screen.blit(surf, (10, panel_y + 10 + i * 25))
-        
         # Input box
         if input_active:
             prompt = "Enter filename to save: " if input_mode == 'save' else "Enter filename to load: "
             prompt_surf = self.font.render(prompt, True, (255, 255, 0))
             input_surf = self.font.render(input_text + "_", True, (255, 255, 255))
             
-            box_y = self.SCREEN_H // 2 - 40
-            pygame.draw.rect(self.screen, (80, 80, 80), (50, box_y, self.SCREEN_W - 100, 80))
-            pygame.draw.rect(self.screen, (255, 255, 255), (50, box_y, self.SCREEN_W - 100, 80), 2)
+            box_y = self.panel_y // 2 - 40
+            pygame.draw.rect(self.screen, (80, 80, 80), (50, box_y, max(260, window_w - 100), 80))
+            pygame.draw.rect(self.screen, (255, 255, 255), (50, box_y, max(260, window_w - 100), 80), 2)
             
             self.screen.blit(prompt_surf, (60, box_y + 10))
             self.screen.blit(input_surf, (60, box_y + 40))
