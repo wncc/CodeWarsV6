@@ -185,7 +185,7 @@ class GameState:
 
             ex = float(self.__world[i, 1])
             ey = float(self.__world[i, 2])
-            enemy_health = float(self.__world[self.__id, 7])
+            enemy_health = float(self.__world[i, 7])
             dist = math.sqrt((ex - px)**2 + (ey - py)**2)
 
             if dist <= radius:
@@ -452,6 +452,46 @@ class GameState:
                 })
 
         return spawns
+    
+    def player_markers(self):
+        """
+        Helper for bots: return angle and distance to ALL active players on the map.
+        No sensor-radius or quadrant restriction — full map visibility.
+
+        Output format:
+        [
+            {"id": int, "angle": float, "distance": float},
+            ...
+        ]
+
+        angle is radians from bot -> player using atan2(dy, dx).
+        0 means right, pi/2 means down, -pi/2 means up.
+        """
+        px, py = self.my_position()
+        me_id = self._GameState__id
+        world = self._GameState__world
+
+        markers = []
+
+        for i in range(8):
+            if i == me_id:
+                continue
+            if world[i, 0] != 1:
+                continue
+
+            ex = float(world[i, 1])
+            ey = float(world[i, 2])
+
+            dx = ex - px
+            dy = ey - py
+
+            markers.append({
+                "id": i,
+                "angle": math.atan2(dy, dx),
+                "distance": math.sqrt(dx * dx + dy * dy),
+            })
+
+        return markers
 
     def my_grenades(self):
         """

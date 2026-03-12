@@ -117,7 +117,7 @@ class Grenade:
 grenades = {
     1: Grenade(1, "Frag Grenade", damage=275, blast_radius=200, fuse_time=3, effect_time=1, sprite_file="frag_grenade.png", proxy=False),
     2: Grenade(2, "Proximity Grenade", damage=275, blast_radius=200, fuse_time=5, effect_time=1.5, sprite_file="prox_grenade.png", proxy=True),
-    3: Grenade(3, "Gas Grenade", damage=150, blast_radius=200, fuse_time=2, effect_time=10, sprite_file="gas_grenade.png", proxy=False)
+    3: Grenade(3, "Gas Grenade", damage=150, blast_radius=125, fuse_time=2, effect_time=10, sprite_file="gas_grenade.png", proxy=False)
 }
 
 def get_grenade(grenade_id):

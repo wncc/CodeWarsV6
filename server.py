@@ -476,6 +476,38 @@ class Server:
             and (cy - half_h - padding) <= py <= (cy + half_h + padding)
         )
 
+    def _segment_hits_player_hitbox(self, x0, y0, x1, y1, player_idx, padding=0.0, max_step=2.0):
+        """Swept segment hit test against player rectangle to prevent bullet tunneling."""
+        cx = self.world_data[player_idx, 1]
+        cy = self.world_data[player_idx, 2]
+        half_h = self._get_player_half_h(player_idx)
+        left = cx - self.PLAYER_HALF_W - padding
+        right = cx + self.PLAYER_HALF_W + padding
+        top = cy - half_h - padding
+        bottom = cy + half_h + padding
+
+        seg_min_x = min(x0, x1)
+        seg_max_x = max(x0, x1)
+        seg_min_y = min(y0, y1)
+        seg_max_y = max(y0, y1)
+        if seg_max_x < left or seg_min_x > right or seg_max_y < top or seg_min_y > bottom:
+            return False
+
+        dx = x1 - x0
+        dy = y1 - y0
+        length = float(np.hypot(dx, dy))
+        if length <= 1e-8:
+            return self._point_hits_player_hitbox(x0, y0, player_idx, padding=padding)
+
+        steps = max(1, int(np.ceil(length / max_step)))
+        for i in range(steps + 1):
+            t = i / steps
+            px = x0 + dx * t
+            py = y0 + dy * t
+            if left <= px <= right and top <= py <= bottom:
+                return True
+        return False
+
     def _push_out_of_obstacle(self, x, y, radius, push_x=0.0, push_y=0.0):
         """Try to move a grenade out of solid geometry using small radial offsets."""
         if not self.is_colliding_with_obstacle(x, y, radius):
@@ -1334,6 +1366,7 @@ class Server:
                 
                 # Spawn bullets based on rpf (rounds per fire)
                 bullets_spawned = 0
+                spawned_bullet_slots = []
                 for i in range(weapon.rpf):
                     free_slots = np.where(self.world_data[id:id+5, 0] == 0)[0]
                     if len(free_slots) > 0:
@@ -1370,6 +1403,7 @@ class Server:
                         self.world_data[id+bullet_index, 9] = idx
                         # store weapon id so SAW/Rocket logic can identify bullet type
                         self.world_data[id+bullet_index, 10] = weapon.gun_id
+                        spawned_bullet_slots.append(id + bullet_index)
                         bullets_spawned += 1
                 
                 if bullets_spawned > 0:
@@ -1381,12 +1415,11 @@ class Server:
                     self.world_data[idx, 10] = weapon.total_ammo
                     
                     # Update bullet_old_positions for newly spawned bullets to prevent false collision checks
-                    for i in range(weapon.rpf):
-                        bullet_slot = id + i
+                    for bullet_slot in spawned_bullet_slots:
                         if bullet_slot < 48 and self.world_data[bullet_slot, 0] == 1:
-                            # Set old position to current position (spawn position) so first frame doesn't check from (0,0)
-                            bullet_old_positions[bullet_slot-8, 0] = self.world_data[bullet_slot, 1]
-                            bullet_old_positions[bullet_slot-8, 1] = self.world_data[bullet_slot, 2]
+                            # Start sweep at shooter center so close-range targets between muzzle and bullet don't get skipped.
+                            bullet_old_positions[bullet_slot-8, 0] = self.world_data[idx, 1]
+                            bullet_old_positions[bullet_slot-8, 1] = self.world_data[idx, 2]
 
             # detect collisions
             # BULLET -> TANK collisions: apply damage, credit score, respawn on death
@@ -1396,6 +1429,8 @@ class Server:
                 bullet_weapon_id = int(self.world_data[b, 10])
                 # bullet position
                 bx, by = self.world_data[b, 1], self.world_data[b, 2]
+                old_bx = bullet_old_positions[b - 8, 0]
+                old_by = bullet_old_positions[b - 8, 1]
                 
                 if bullet_weapon_id in WEAPONS:
                     damage = WEAPONS[bullet_weapon_id].damage
@@ -1416,7 +1451,7 @@ class Server:
                     ):
                         # Prevent instant self-kill right at launch.
                         continue
-                    if self._point_hits_player_hitbox(bx, by, t, padding=2.0):
+                    if self._segment_hits_player_hitbox(old_bx, old_by, bx, by, t, padding=2.0):
                         if bullet_weapon_id == SAW_WEAPON_ID:
                             # Saw projectile pierces and kills everything it touches.
                             self._record_player_death(t, killer_idx=owner)
