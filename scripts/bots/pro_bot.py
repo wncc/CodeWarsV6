@@ -14,7 +14,8 @@
 #   state.my_gun()             -> int or None   (current weapon id)
 #   state.my_ammo()            -> (current, total)
 #   state.my_grenades()        -> {selected_type, frag, proxy, gas}
-#   state.enemy_positions()    -> [{id,x,y,health,current_gun,secondary_gun,current_grenade,distance}]
+#   state.enemy_positions()    -> [(x, y), ...]
+#   state.enemy_info()         -> [{id,x,y,health,current_gun,secondary_gun,current_grenade,distance}]
 #   state.gun_spawns()         -> [{x,y,weapon_id}]
 #   state.medkit_spawns()      -> [{x,y}]
 #   state.active_grenades()    -> [{x,y,vx,vy,type}]
@@ -49,8 +50,8 @@ def run(state, memory):
             "fly_tick": 0,
         }
 
-    # Use enemy_positions for actual coordinates anywhere on map (not quadrant-limited).
-    enemies = state.enemy_positions()
+    # Use enemy_info for detailed coordinates and stats within sensor radius.
+    enemies = state.enemy_info()
     markers = state.player_markers()
     ammo_cur, _ = state.my_ammo()
     grenades = state.my_grenades()
@@ -172,6 +173,17 @@ def run(state, memory):
 
         force_close = memory["no_damage_ticks"] >= 16
 
+        # Basic obstacle-aware movement toward/away from target.
+        desired_dir = -1 if dx < 0 else 1
+        front_angle = math.pi if desired_dir == -1 else 0.0
+        back_angle = 0.0 if desired_dir == -1 else math.pi
+        front_dist = state.distance_to_obstacle(front_angle, max_distance=64.0, step=4.0)
+        back_dist = state.distance_to_obstacle(back_angle, max_distance=64.0, step=4.0)
+        front_blocked = front_dist < 20.0
+
+        if front_blocked and fuel > 6.0:
+            jetpack()
+
         # Movement based on actual pixel x-position, not angle hemisphere.
         if escaping_nade:
             if memory["nade_escape_dir"] < 0:
@@ -194,18 +206,24 @@ def run(state, memory):
                 jetpack()
         elif distance > MAX_FIGHT_DIST:
             # Close the gap: move directly toward enemy.
-            if dx < 0:
+            if front_blocked and back_dist > front_dist:
+                move_right() if desired_dir == -1 else move_left()
+            elif dx < 0:
                 move_left()
             else:
                 move_right()
         elif distance < MIN_FIGHT_DIST and (not force_close):
             # Back away.
-            if dx < 0:
+            if front_blocked and back_dist > front_dist:
+                move_left() if desired_dir == -1 else move_right()
+            elif dx < 0:
                 move_right()
             else:
                 move_left()
         elif force_close and distance > PRESSURE_DIST:
-            if dx < 0:
+            if front_blocked and back_dist > front_dist:
+                move_right() if desired_dir == -1 else move_left()
+            elif dx < 0:
                 move_left()
             else:
                 move_right()
@@ -289,7 +307,18 @@ def run(state, memory):
         elif m_error < -0.01:
             aim_left()
 
-        if m_angle > 1.57 or m_angle < -1.57:
+        desired_dir = -1 if math.cos(m_angle) < 0 else 1
+        front_angle = math.pi if desired_dir == -1 else 0.0
+        back_angle = 0.0 if desired_dir == -1 else math.pi
+        front_dist = state.distance_to_obstacle(front_angle, max_distance=64.0, step=4.0)
+        back_dist = state.distance_to_obstacle(back_angle, max_distance=64.0, step=4.0)
+        front_blocked = front_dist < 20.0
+        if front_blocked and fuel > 6.0:
+            jetpack()
+
+        if front_blocked and back_dist > front_dist:
+            move_right() if desired_dir == -1 else move_left()
+        elif desired_dir == -1:
             move_left()
         else:
             move_right()

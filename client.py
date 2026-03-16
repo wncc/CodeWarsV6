@@ -1,4 +1,5 @@
 import socket
+import time
 import numpy as np
 import config
 
@@ -13,9 +14,17 @@ class Network:
         self.addr = (self.host, self.port)
 
     def connect(self, name):
-        try:
-            self.client.connect(self.addr)
-        except (socket.timeout, OSError) as e:
+        last_err = None
+        for attempt in range(1, 6):
+            try:
+                self.client.connect(self.addr)
+                break
+            except (socket.timeout, ConnectionRefusedError, OSError) as e:
+                last_err = e
+                if attempt < 5:
+                    time.sleep(0.5)
+                    continue
+        else:
             if self.host not in ("127.0.0.1", "localhost"):
                 # Retry once against localhost for local dev setups.
                 self.client.close()
@@ -25,8 +34,8 @@ class Network:
                 try:
                     self.client.connect(fallback_addr)
                     self.host, self.addr = fallback_addr[0], fallback_addr
-                    print(f"[CLIENT] Falling back to {self.host}:{self.port} after connect failure: {e}")
-                except (socket.timeout, OSError):
+                    print(f"[CLIENT] Falling back to {self.host}:{self.port} after connect failure: {last_err}")
+                except (socket.timeout, ConnectionRefusedError, OSError):
                     raise
             else:
                 raise
