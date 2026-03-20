@@ -1,89 +1,138 @@
 def run(state, memory):
     roam_dir = 1
-    roam_ticks = 180
-    strafe_dir = 1
-    strafe_ticks = 0
+    patrol_idx = 0
+    jump_cd = 0
     grenade_cd = 0
-    evade_dir = 1
-    evade_ticks = 0
     stuck = 0
     last_x = 0
     last_y = 0
+    climb_ticks = 0
+    fly_ticks = 0
 
     if memory:
         try:
             parts = memory.split(",")
-            if len(parts) >= 10:
+            if len(parts) >= 9:
                 roam_dir = -1 if int(parts[0]) < 0 else 1
-                roam_ticks = int(parts[1])
-                strafe_dir = -1 if int(parts[2]) < 0 else 1
-                strafe_ticks = int(parts[3])
-                grenade_cd = int(parts[4])
-                evade_dir = -1 if int(parts[5]) < 0 else 1
-                evade_ticks = int(parts[6])
-                stuck = int(parts[7])
-                last_x = int(parts[8])
-                last_y = int(parts[9])
+                patrol_idx = int(parts[1])
+                jump_cd = int(parts[2])
+                grenade_cd = int(parts[3])
+                stuck = int(parts[4])
+                last_x = int(parts[5])
+                last_y = int(parts[6])
+                climb_ticks = int(parts[7])
+                fly_ticks = int(parts[8])
         except Exception:
             roam_dir = 1
-            roam_ticks = 180
-            strafe_dir = 1
-            strafe_ticks = 0
+            patrol_idx = 0
+            jump_cd = 0
             grenade_cd = 0
-            evade_dir = 1
-            evade_ticks = 0
             stuck = 0
             last_x = 0
             last_y = 0
+            climb_ticks = 0
+            fly_ticks = 0
 
     x, y = state.my_position()
     health = state.my_health()
     fuel = state.my_fuel()
     aim = state.my_aim_angle()
-    ammo_cur, _ = state.my_ammo()
+    ammo_cur, ammo_total = state.my_ammo()
     current_gun = state.my_gun()
-    grenades = state.my_grenades()
     enemies = state.enemy_info()
     markers = state.player_markers()
+    grenades = state.my_grenades()
+
     current_damage = 0
     current_range = 0
-
     if current_gun is not None:
         current_damage = state.get_weapon_stat(current_gun, "damage") or 0
         current_range = state.get_weapon_stat(current_gun, "effective_range") or 0
 
+    if jump_cd > 0:
+        jump_cd -= 1
     if grenade_cd > 0:
         grenade_cd -= 1
-    if evade_ticks > 0:
-        evade_ticks -= 1
-    if strafe_ticks > 0:
-        strafe_ticks -= 1
+    if climb_ticks > 0:
+        climb_ticks -= 1
+    if fly_ticks > 0:
+        fly_ticks -= 1
 
-    nearest_live_grenade = None
-    grenade_dist = 999999.0
-    for g in state.active_grenades():
-        dxg = x - g["x"]
-        dyg = y - g["y"]
-        dg = math.sqrt(dxg * dxg + dyg * dyg)
-        if dg < grenade_dist:
-            grenade_dist = dg
-            nearest_live_grenade = g
+    patrol_points = [
+        (38, 105),
+        (200, 150),
+        (350, 50),
+        (500, 100),
+        (750, 150),
+        (887, 291),
+        (926, 656),
+        (1141, 677),
+        (1281, 291),
+        (1546, 998),
+        (1811, 286),
+        (2017, 709),
+        (2163, 299),
+        (2269, 296),
+        (2378, 617),
+    ]
+    patrol_len = len(patrol_points)
+    if patrol_len > 0:
+        patrol_idx = patrol_idx % patrol_len
 
-    if nearest_live_grenade is not None and grenade_dist < 165.0:
-        if x < nearest_live_grenade["x"]:
+    best_gun = None
+    best_gun_dist = 999999.0
+    for gun in state.gun_spawns():
+        weapon_id = gun["weapon_id"]
+        damage = state.get_weapon_stat(weapon_id, "damage") or 0
+        effective_range = state.get_weapon_stat(weapon_id, "effective_range") or 0
+        better_damage = damage >= current_damage + 4
+        better_range = effective_range >= current_range + 120
+        need_upgrade = current_gun is None or current_damage < 12
+        if need_upgrade or better_damage or better_range:
+            dx = gun["x"] - x
+            dy = gun["y"] - y
+            dist = math.sqrt(dx * dx + dy * dy)
+            if dist < best_gun_dist:
+                best_gun_dist = dist
+                best_gun = gun
+
+    nearest_medkit = None
+    nearest_medkit_dist = 999999.0
+    for medkit in state.medkit_spawns():
+        dx = medkit["x"] - x
+        dy = medkit["y"] - y
+        dist = math.sqrt(dx * dx + dy * dy)
+        if dist < nearest_medkit_dist:
+            nearest_medkit_dist = dist
+            nearest_medkit = medkit
+
+    nearest_grenade = None
+    nearest_grenade_dist = 999999.0
+    for grenade in state.active_grenades():
+        dx = x - grenade["x"]
+        dy = y - grenade["y"]
+        dist = math.sqrt(dx * dx + dy * dy)
+        if dist < nearest_grenade_dist:
+            nearest_grenade_dist = dist
+            nearest_grenade = grenade
+
+    if nearest_grenade is not None and nearest_grenade_dist < 150.0:
+        if x < nearest_grenade["x"]:
             move_left()
+            roam_dir = -1
         else:
             move_right()
-        if fuel > 8.0:
+            roam_dir = 1
+        if fuel > 65.0 and jump_cd <= 0:
             jetpack()
-        roam_dir = -1 if x < nearest_live_grenade["x"] else 1
+            jump_cd = 28
+            climb_ticks = 10
     elif enemies:
         target = enemies[0]
-        best_score = 10 ** 9
+        best_dist = float(target["distance"])
         for enemy in enemies:
-            score = enemy["distance"] + enemy["health"] * 0.15
-            if score < best_score:
-                best_score = score
+            if enemy["distance"] < best_dist:
+                best_dist = float(enemy["distance"])
                 target = enemy
 
         ex = float(target["x"])
@@ -98,77 +147,61 @@ def run(state, memory):
         elif err < -math.pi:
             err += 2.0 * math.pi
 
-        if err > 0.01:
+        if err > 0.02:
             aim_right()
-        elif err < -0.01:
+        elif err < -0.02:
             aim_left()
 
-        desired_dir = -1 if dx < 0 else 1
-        front_angle = math.pi if desired_dir == -1 else 0.0
-        back_angle = 0.0 if desired_dir == -1 else math.pi
+        move_dir = -1 if dx < 0 else 1
+        roam_dir = move_dir
+        front_angle = math.pi if move_dir < 0 else 0.0
         front_dist = state.distance_to_obstacle(front_angle, max_distance=64.0, step=4.0)
-        back_dist = state.distance_to_obstacle(back_angle, max_distance=64.0, step=4.0)
         blocked = state.distance_to_obstacle(angle, max_distance=2000.0, step=4.0) < max(0.0, dist - 18.0)
 
-        if blocked:
-            if evade_ticks <= 0:
-                evade_dir = -evade_dir
-                evade_ticks = 36
-            if evade_dir < 0:
+        if dist > 180.0 or blocked:
+            if move_dir < 0:
                 move_left()
             else:
                 move_right()
-            if fuel > 8.0 and (front_dist < 20.0 or dy < -28.0):
-                jetpack()
-        elif dist > 250.0:
-            if desired_dir < 0:
-                move_left()
-            else:
-                move_right()
-            if fuel > 8.0 and (front_dist < 20.0 or dy < -24.0):
-                jetpack()
-        elif dist < 105.0:
-            if desired_dir < 0:
+        elif dist < 90.0:
+            if move_dir < 0:
                 move_right()
             else:
                 move_left()
-            if fuel > 10.0 and health < 90.0:
-                jetpack()
         else:
-            if strafe_ticks <= 0:
-                strafe_dir = -strafe_dir
-                strafe_ticks = 45
-            if strafe_dir < 0:
+            if move_dir < 0:
                 move_left()
             else:
                 move_right()
-            if fuel > 8.0 and (front_dist < 18.0 or dy < -32.0):
-                jetpack()
 
-        if front_dist < 16.0 and back_dist > front_dist:
-            if desired_dir < 0:
-                move_right()
-            else:
-                move_left()
+        if front_dist < 18.0:
+            climb_ticks = 8
+        if dy < -70.0 and abs(dx) < 140.0:
+            climb_ticks = 8
 
-        if (not blocked) and abs(err) < 0.13:
-            if ammo_cur <= 0:
-                switch_weapon()
+        if fuel > 38.0 and (climb_ticks > 0 or (dy < -70.0 and abs(dx) < 140.0)):
+            jetpack()
+        if fuel > 55.0 and jump_cd <= 0 and (front_dist < 18.0 or (dy < -70.0 and abs(dx) < 140.0)):
+            jetpack()
+            jump_cd = 20
+            climb_ticks = 8
+
+        if not blocked and abs(err) < 0.14:
+            if ammo_cur > 0:
+                shoot()
+            elif ammo_total > 0:
                 reload()
             else:
-                shoot()
-        elif ammo_cur <= 0:
-            switch_weapon()
+                switch_weapon()
+        elif ammo_cur <= 0 and ammo_total > 0:
             reload()
 
-        if (not blocked) and grenade_cd == 0 and dist < 220.0:
+        if not blocked and grenade_cd <= 0 and dist < 170.0:
             desired_type = 1
-            if grenades["gas"] > 0 and (dist < 170.0 or health > 120.0):
+            if grenades["gas"] > 0 and dist < 140.0:
                 desired_type = 3
             elif grenades["frag"] <= 0 and grenades["proxy"] > 0:
                 desired_type = 2
-            elif grenades["frag"] <= 0 and grenades["gas"] > 0:
-                desired_type = 3
 
             total_nades = grenades["frag"] + grenades["proxy"] + grenades["gas"]
             if total_nades > 0:
@@ -176,166 +209,164 @@ def run(state, memory):
                     change_grenade_type()
                 else:
                     throw_grenade()
-                    grenade_cd = 50
+                    grenade_cd = 60
 
-        best_spawn = None
-        best_spawn_score = -999999.0
-        for gun in state.gun_spawns():
-            weapon_id = gun["weapon_id"]
-            damage = state.get_weapon_stat(weapon_id, "damage") or 0
-            effective_range = state.get_weapon_stat(weapon_id, "effective_range") or 0
-            dist_score = math.sqrt((gun["x"] - x) * (gun["x"] - x) + (gun["y"] - y) * (gun["y"] - y))
-            spawn_score = damage * 20.0 + effective_range * 0.03 - dist_score * 0.25
-            if weapon_id in (3, 4, 5, 10, 11, 12, 13, 14, 15):
-                spawn_score += 30.0
-            if spawn_score > best_spawn_score:
-                best_spawn_score = spawn_score
-                best_spawn = gun
-
-        if best_spawn is not None:
-            better_damage = (state.get_weapon_stat(best_spawn["weapon_id"], "damage") or 0) >= current_damage + 4
-            better_range = (state.get_weapon_stat(best_spawn["weapon_id"], "effective_range") or 0) >= current_range + 120
-            if current_gun is None or current_damage < 12 or better_damage or better_range:
-                pickup_gun(state)
+        if best_gun is not None and best_gun_dist < 20.0:
+            pickup_gun(state)
     elif markers:
-        marker = markers[0]
-        for candidate in markers:
-            if candidate["distance"] < marker["distance"]:
-                marker = candidate
+        target = markers[0]
+        best_dist = float(target["distance"])
+        for marker in markers:
+            if marker["distance"] < best_dist:
+                best_dist = float(marker["distance"])
+                target = marker
 
-        m_angle = float(marker["angle"])
-        m_dist = float(marker["distance"])
-        m_err = m_angle - aim
-        if m_err > math.pi:
-            m_err -= 2.0 * math.pi
-        elif m_err < -math.pi:
-            m_err += 2.0 * math.pi
+        angle = float(target["angle"])
+        dist = float(target["distance"])
+        err = angle - aim
+        if err > math.pi:
+            err -= 2.0 * math.pi
+        elif err < -math.pi:
+            err += 2.0 * math.pi
 
-        if m_err > 0.01:
+        if err > 0.02:
             aim_right()
-        elif m_err < -0.01:
+        elif err < -0.02:
             aim_left()
 
-        desired_dir = -1 if math.cos(m_angle) < 0 else 1
-        front_angle = math.pi if desired_dir == -1 else 0.0
-        front_dist = state.distance_to_obstacle(front_angle, max_distance=64.0, step=4.0)
-
-        if desired_dir < 0:
+        move_dir = -1 if math.cos(angle) < 0 else 1
+        roam_dir = move_dir
+        if move_dir < 0:
             move_left()
         else:
             move_right()
 
-        if fuel > 8.0 and (front_dist < 20.0 or (m_angle < -0.3 and m_angle > -2.8 and m_dist > 120.0)):
+        front_angle = math.pi if move_dir < 0 else 0.0
+        front_dist = state.distance_to_obstacle(front_angle, max_distance=96.0, step=4.0)
+        long_chase = dist > 320.0
+        very_long_chase = dist > 520.0
+        target_above = angle < -0.35 and angle > -2.8
+
+        if front_dist < 28.0:
+            climb_ticks = 10
+        if target_above and dist > 140.0:
+            fly_ticks = 12
+        if very_long_chase:
+            fly_ticks = 16
+
+        if fuel > 34.0 and (climb_ticks > 0 or fly_ticks > 0):
             jetpack()
-
-        best_spawn = None
-        best_spawn_score = -999999.0
-        for gun in state.gun_spawns():
-            weapon_id = gun["weapon_id"]
-            damage = state.get_weapon_stat(weapon_id, "damage") or 0
-            effective_range = state.get_weapon_stat(weapon_id, "effective_range") or 0
-            dist_score = math.sqrt((gun["x"] - x) * (gun["x"] - x) + (gun["y"] - y) * (gun["y"] - y))
-            spawn_score = damage * 20.0 + effective_range * 0.03 - dist_score * 0.25
-            if weapon_id in (3, 4, 5, 10, 11, 12, 13, 14, 15):
-                spawn_score += 30.0
-            if spawn_score > best_spawn_score:
-                best_spawn_score = spawn_score
-                best_spawn = gun
-
-        if best_spawn is not None:
-            better_damage = (state.get_weapon_stat(best_spawn["weapon_id"], "damage") or 0) >= current_damage + 4
-            better_range = (state.get_weapon_stat(best_spawn["weapon_id"], "effective_range") or 0) >= current_range + 120
-            if current_gun is None or current_damage < 12 or better_damage or better_range:
-                pickup_gun(state)
-    else:
-        medkit_target = None
-        gun_target = None
-        best_medkit_dist = 999999.0
-        best_gun_dist = 999999.0
-
-        for medkit in state.medkit_spawns():
-            dmx = medkit["x"] - x
-            dmy = medkit["y"] - y
-            dd = math.sqrt(dmx * dmx + dmy * dmy)
-            if dd < best_medkit_dist:
-                best_medkit_dist = dd
-                medkit_target = medkit
-
-        for gun in state.gun_spawns():
-            dgx = gun["x"] - x
-            dgy = gun["y"] - y
-            dd = math.sqrt(dgx * dgx + dgy * dgy)
-            if dd < best_gun_dist:
-                best_gun_dist = dd
-                gun_target = gun
-
-        want_gun = current_gun is None or current_damage < 12
-        if gun_target is not None and current_gun is not None:
-            gun_damage = state.get_weapon_stat(gun_target["weapon_id"], "damage") or 0
-            gun_range = state.get_weapon_stat(gun_target["weapon_id"], "effective_range") or 0
-            want_gun = want_gun or gun_damage >= current_damage + 4 or gun_range >= current_range + 120
-
-        if health < 110.0 and medkit_target is not None:
-            tx = medkit_target["x"]
-            desired_dir = -1 if tx < x else 1
-            if desired_dir < 0:
-                move_left()
+        if fuel > 44.0 and jump_cd <= 0 and (
+            front_dist < 28.0
+            or (target_above and dist > 140.0)
+            or very_long_chase
+        ):
+            jetpack()
+            jump_cd = 14
+            if target_above or very_long_chase:
+                fly_ticks = 12
             else:
-                move_right()
-            if fuel > 8.0 and state.distance_to_obstacle(math.pi if desired_dir < 0 else 0.0, max_distance=64.0, step=4.0) < 18.0:
-                jetpack()
-            pickup()
-        elif want_gun and gun_target is not None:
-            tx = gun_target["x"]
-            desired_dir = -1 if tx < x else 1
-            if desired_dir < 0:
-                move_left()
-            else:
-                move_right()
-            if fuel > 8.0 and state.distance_to_obstacle(math.pi if desired_dir < 0 else 0.0, max_distance=64.0, step=4.0) < 18.0:
-                jetpack()
+                climb_ticks = 10
+
+        if long_chase and not target_above and fuel > 60.0 and jump_cd <= 4:
+            jetpack()
+    elif health < 100.0 and nearest_medkit is not None:
+        tx = nearest_medkit["x"]
+        move_dir = -1 if tx < x else 1
+        roam_dir = move_dir
+        if move_dir < 0:
+            move_left()
+        else:
+            move_right()
+        front_angle = math.pi if move_dir < 0 else 0.0
+        front_dist = state.distance_to_obstacle(front_angle, max_distance=64.0, step=4.0)
+        if front_dist < 18.0:
+            climb_ticks = 8
+        if fuel > 38.0 and climb_ticks > 0:
+            jetpack()
+        if fuel > 55.0 and jump_cd <= 0 and front_dist < 18.0:
+            jetpack()
+            jump_cd = 20
+            climb_ticks = 8
+        pickup()
+    elif best_gun is not None:
+        tx = best_gun["x"]
+        move_dir = -1 if tx < x else 1
+        roam_dir = move_dir
+        if move_dir < 0:
+            move_left()
+        else:
+            move_right()
+        front_angle = math.pi if move_dir < 0 else 0.0
+        front_dist = state.distance_to_obstacle(front_angle, max_distance=64.0, step=4.0)
+        if front_dist < 18.0:
+            climb_ticks = 10
+        if fuel > 38.0 and climb_ticks > 0:
+            jetpack()
+        if fuel > 55.0 and jump_cd <= 0 and front_dist < 18.0:
+            jetpack()
+            jump_cd = 20
+            climb_ticks = 10
+        if best_gun_dist < 20.0:
             pickup_gun(state)
         else:
-            front_angle = math.pi if roam_dir < 0 else 0.0
-            front_dist = state.distance_to_obstacle(front_angle, max_distance=64.0, step=4.0)
-            if front_dist < 18.0 or roam_ticks <= 0:
-                roam_dir = -roam_dir
-                roam_ticks = 180
-                if fuel > 8.0:
-                    jetpack()
+            pickup()
+    else:
+        tx, ty = patrol_points[patrol_idx]
+        if abs(tx - x) < 36.0:
+            patrol_idx = (patrol_idx + 1) % patrol_len
+            tx, ty = patrol_points[patrol_idx]
 
-            roam_ticks -= 1
-            if roam_dir < 0:
-                move_left()
+        move_dir = -1 if tx < x else 1
+        roam_dir = move_dir
+        front_angle = math.pi if move_dir < 0 else 0.0
+        front_dist = state.distance_to_obstacle(front_angle, max_distance=64.0, step=4.0)
+
+        if move_dir < 0:
+            move_left()
+        else:
+            move_right()
+
+        if front_dist < 18.0:
+            climb_ticks = 10
+        if ty < y - 90.0 and abs(tx - x) < 120.0:
+            climb_ticks = 10
+
+        if fuel > 34.0 and (climb_ticks > 0 or fly_ticks > 0):
+            jetpack()
+        if fuel > 48.0 and jump_cd <= 0 and (front_dist < 18.0 or (ty < y - 90.0 and abs(tx - x) < 120.0)):
+            jetpack()
+            jump_cd = 22
+            if ty < y - 90.0 and abs(tx - x) < 120.0:
+                fly_ticks = 8
             else:
-                move_right()
+                climb_ticks = 10
 
-            roam_target = math.pi if roam_dir < 0 else 0.0
-            roam_err = roam_target - aim
-            if roam_err > math.pi:
-                roam_err -= 2.0 * math.pi
-            elif roam_err < -math.pi:
-                roam_err += 2.0 * math.pi
-            if abs(roam_err) > 0.05 and roam_ticks % 8 == 0:
-                if roam_err > 0:
-                    aim_right()
-                else:
-                    aim_left()
-            if fuel > 10.0 and roam_ticks % 55 == 0:
-                jetpack()
+        roam_target = math.pi if move_dir < 0 else 0.0
+        roam_err = roam_target - aim
+        if roam_err > math.pi:
+            roam_err -= 2.0 * math.pi
+        elif roam_err < -math.pi:
+            roam_err += 2.0 * math.pi
+        if roam_err > 0.08:
+            aim_right()
+        elif roam_err < -0.08:
+            aim_left()
 
     moved = math.sqrt((x - last_x) * (x - last_x) + (y - last_y) * (y - last_y))
-    if moved < 1.5:
+    if moved < 2.0:
         stuck += 1
     else:
         stuck = 0
 
     if stuck > 18:
+        patrol_idx = (patrol_idx + 1) % patrol_len
         roam_dir = -roam_dir
-        evade_dir = -evade_dir
-        if fuel > 6.0:
+        climb_ticks = 12
+        if fuel > 55.0 and jump_cd <= 0:
             jetpack()
+            jump_cd = 24
         stuck = 0
 
-    memory = f"{roam_dir},{roam_ticks},{strafe_dir},{strafe_ticks},{grenade_cd},{evade_dir},{evade_ticks},{stuck},{int(x)},{int(y)}"
+    memory = f"{roam_dir},{patrol_idx},{jump_cd},{grenade_cd},{stuck},{int(x)},{int(y)},{climb_ticks},{fly_ticks}"
     return memory[:100]
