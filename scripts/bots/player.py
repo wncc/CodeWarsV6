@@ -1,4 +1,7 @@
 def run(state, memory):
+    # Persistent state stored inside the engine-provided memory string.
+    # These values keep the bot's movement, cooldowns, and anti-stuck behavior
+    # stable across frames.
     roam_dir = 1
     patrol_idx = 0
     jump_cd = 0
@@ -9,6 +12,8 @@ def run(state, memory):
     climb_ticks = 0
     fly_ticks = 0
 
+    # Restore the previous frame's state from memory.
+    # If parsing fails, the bot falls back to safe defaults.
     if memory:
         try:
             parts = memory.split(",")
@@ -33,6 +38,8 @@ def run(state, memory):
             climb_ticks = 0
             fly_ticks = 0
 
+    # Read the current game snapshot. The bot makes all decisions for this
+    # frame from these state values.
     x, y = state.my_position()
     health = state.my_health()
     fuel = state.my_fuel()
@@ -43,12 +50,14 @@ def run(state, memory):
     markers = state.player_markers()
     grenades = state.my_grenades()
 
+    # Cache the current weapon's basic stats so upgrade decisions are easy.
     current_damage = 0
     current_range = 0
     if current_gun is not None:
         current_damage = state.get_weapon_stat(current_gun, "damage") or 0
         current_range = state.get_weapon_stat(current_gun, "effective_range") or 0
 
+    # Count down all frame-based timers and cooldowns.
     if jump_cd > 0:
         jump_cd -= 1
     if grenade_cd > 0:
@@ -58,6 +67,8 @@ def run(state, memory):
     if fly_ticks > 0:
         fly_ticks -= 1
 
+    # Predefined patrol / traversal points for the catacombs map.
+    # When no urgent combat or pickup goal exists, the bot walks these points.
     patrol_points = [
         (38, 105),
         (200, 150),
@@ -79,6 +90,7 @@ def run(state, memory):
     if patrol_len > 0:
         patrol_idx = patrol_idx % patrol_len
 
+    # Find the nearest visible gun that is a meaningful upgrade.
     best_gun = None
     best_gun_dist = 999999.0
     for gun in state.gun_spawns():
@@ -96,6 +108,7 @@ def run(state, memory):
                 best_gun_dist = dist
                 best_gun = gun
 
+    # Find the nearest visible medkit for low-health recovery.
     nearest_medkit = None
     nearest_medkit_dist = 999999.0
     for medkit in state.medkit_spawns():
@@ -106,6 +119,7 @@ def run(state, memory):
             nearest_medkit_dist = dist
             nearest_medkit = medkit
 
+    # Track the nearest visible grenade for emergency avoidance.
     nearest_grenade = None
     nearest_grenade_dist = 999999.0
     for grenade in state.active_grenades():
@@ -116,6 +130,7 @@ def run(state, memory):
             nearest_grenade_dist = dist
             nearest_grenade = grenade
 
+    # Highest-priority escape behavior: move away from a nearby live grenade.
     if nearest_grenade is not None and nearest_grenade_dist < 150.0:
         if x < nearest_grenade["x"]:
             move_left()
@@ -127,6 +142,10 @@ def run(state, memory):
             jetpack()
             jump_cd = 28
             climb_ticks = 10
+    # Visible-enemy combat behavior:
+    # aim at the closest enemy, move to pressure/fight, use jetpack for blocked
+    # climbs, shoot when aim and line-of-sight are good, and optionally throw
+    # grenades.
     elif enemies:
         target = enemies[0]
         best_dist = float(target["distance"])
@@ -147,6 +166,7 @@ def run(state, memory):
         elif err < -math.pi:
             err += 2.0 * math.pi
 
+        # Aim the weapon toward the target.
         if err > 0.02:
             aim_right()
         elif err < -0.02:
@@ -158,6 +178,10 @@ def run(state, memory):
         front_dist = state.distance_to_obstacle(front_angle, max_distance=64.0, step=4.0)
         blocked = state.distance_to_obstacle(angle, max_distance=2000.0, step=4.0) < max(0.0, dist - 18.0)
 
+        # Core combat movement:
+        # far or blocked -> close distance
+        # too near -> back off
+        # mid-range -> keep pressuring in the target direction
         if dist > 180.0 or blocked:
             if move_dir < 0:
                 move_left()
@@ -174,11 +198,14 @@ def run(state, memory):
             else:
                 move_right()
 
+        # Detect vertical / terrain obstruction and prepare short climbs.
         if front_dist < 18.0:
             climb_ticks = 8
         if dy < -70.0 and abs(dx) < 140.0:
             climb_ticks = 8
 
+        # Jetpack usage in combat:
+        # short bursts for ledges and for enemies above the bot.
         if fuel > 38.0 and (climb_ticks > 0 or (dy < -70.0 and abs(dx) < 140.0)):
             jetpack()
         if fuel > 55.0 and jump_cd <= 0 and (front_dist < 18.0 or (dy < -70.0 and abs(dx) < 140.0)):
@@ -186,6 +213,7 @@ def run(state, memory):
             jump_cd = 20
             climb_ticks = 8
 
+        # Fire only with acceptable aim and line-of-sight.
         if not blocked and abs(err) < 0.14:
             if ammo_cur > 0:
                 shoot()
@@ -196,6 +224,9 @@ def run(state, memory):
         elif ammo_cur <= 0 and ammo_total > 0:
             reload()
 
+        # Grenade behavior:
+        # pick a grenade type based on distance / inventory and use cooldowns to
+        # avoid spamming.
         if not blocked and grenade_cd <= 0 and dist < 170.0:
             desired_type = 1
             if grenades["gas"] > 0 and dist < 140.0:
@@ -211,8 +242,12 @@ def run(state, memory):
                     throw_grenade()
                     grenade_cd = 60
 
+        # Opportunistically grab a better gun if already close enough.
         if best_gun is not None and best_gun_dist < 20.0:
             pickup_gun(state)
+    # Long-range chase behavior:
+    # if no enemy is visible locally, use global player markers to move toward
+    # the nearest distant opponent.
     elif markers:
         target = markers[0]
         best_dist = float(target["distance"])
@@ -229,6 +264,7 @@ def run(state, memory):
         elif err < -math.pi:
             err += 2.0 * math.pi
 
+        # Rotate aim toward the marker direction while approaching.
         if err > 0.02:
             aim_right()
         elif err < -0.02:
@@ -247,6 +283,7 @@ def run(state, memory):
         very_long_chase = dist > 520.0
         target_above = angle < -0.35 and angle > -2.8
 
+        # Prepare climbs / flights for long route traversal.
         if front_dist < 28.0:
             climb_ticks = 10
         if target_above and dist > 140.0:
@@ -254,6 +291,7 @@ def run(state, memory):
         if very_long_chase:
             fly_ticks = 16
 
+        # Jetpack usage for longer chases and vertical travel.
         if fuel > 34.0 and (climb_ticks > 0 or fly_ticks > 0):
             jetpack()
         if fuel > 44.0 and jump_cd <= 0 and (
@@ -270,6 +308,7 @@ def run(state, memory):
 
         if long_chase and not target_above and fuel > 60.0 and jump_cd <= 4:
             jetpack()
+    # Low-health recovery behavior: move toward the nearest visible medkit.
     elif health < 100.0 and nearest_medkit is not None:
         tx = nearest_medkit["x"]
         move_dir = -1 if tx < x else 1
@@ -289,6 +328,7 @@ def run(state, memory):
             jump_cd = 20
             climb_ticks = 8
         pickup()
+    # Weapon-upgrade behavior: move toward the nearest visible useful gun.
     elif best_gun is not None:
         tx = best_gun["x"]
         move_dir = -1 if tx < x else 1
@@ -311,6 +351,8 @@ def run(state, memory):
             pickup_gun(state)
         else:
             pickup()
+    # Default patrol behavior:
+    # follow predefined map points, using jetpack to climb over route obstacles.
     else:
         tx, ty = patrol_points[patrol_idx]
         if abs(tx - x) < 36.0:
@@ -332,6 +374,7 @@ def run(state, memory):
         if ty < y - 90.0 and abs(tx - x) < 120.0:
             climb_ticks = 10
 
+        # Jetpack usage during patrol and route traversal.
         if fuel > 34.0 and (climb_ticks > 0 or fly_ticks > 0):
             jetpack()
         if fuel > 48.0 and jump_cd <= 0 and (front_dist < 18.0 or (ty < y - 90.0 and abs(tx - x) < 120.0)):
@@ -353,6 +396,9 @@ def run(state, memory):
         elif roam_err < -0.08:
             aim_left()
 
+    # Anti-stuck detection:
+    # if the bot fails to make progress for many frames, it flips patrol
+    # direction and forces a recovery jump.
     moved = math.sqrt((x - last_x) * (x - last_x) + (y - last_y) * (y - last_y))
     if moved < 2.0:
         stuck += 1
@@ -368,5 +414,6 @@ def run(state, memory):
             jump_cd = 24
         stuck = 0
 
+    # Save the updated state back into the memory string for the next frame.
     memory = f"{roam_dir},{patrol_idx},{jump_cd},{grenade_cd},{stuck},{int(x)},{int(y)},{climb_ticks},{fly_ticks}"
     return memory[:100]
