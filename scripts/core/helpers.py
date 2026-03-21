@@ -5,7 +5,6 @@ import random
 import time
 import math
 import config
-from config import BULLET_VISUAL_RADIUS
 from config import WEAPON_STATS as WEAPONS
 
 # =========================
@@ -157,19 +156,13 @@ class GameState:
         return float(self.__world[self.__id, 3])
 
     def _sensor_radius(self):
-        gun = self.my_gun()
+        return float(config.get_sensor_radius(self.my_gun()))
 
-        if gun is None:
-            return BULLET_VISUAL_RADIUS
+    def sensor_radius(self):
+        """Return the bot's current sensor radius in pixels."""
+        return self._sensor_radius()
 
-        scope = config.get_weapon_stat(gun, "scope")
-
-        if scope is None:
-            return BULLET_VISUAL_RADIUS
-
-        return scope * BULLET_VISUAL_RADIUS
-
-    def enemy_positions(self):
+    def _enemy_info(self):
 
         radius = self._sensor_radius()
         px, py = self.my_position()
@@ -212,6 +205,14 @@ class GameState:
 
         return enemy_data
 
+    def enemy_positions(self):
+        """Returns a list of (x, y) tuples for enemies within sensor radius."""
+        return [(e["x"], e["y"]) for e in self._enemy_info()]
+
+    def enemy_info(self):
+        """Returns detailed enemy info for bots that need it."""
+        return self._enemy_info()
+
     def all_players(self):
 
         radius = self._sensor_radius()
@@ -236,6 +237,7 @@ class GameState:
                     "x": ex,
                     "y": ey,
                     "health": float(self.__world[i, 7]),
+                    "score": float(self.__world[i, 8]),
                 })
 
         return players
@@ -287,15 +289,21 @@ class GameState:
 
         return result
 
-    def get_weapon_stat(self, weapon_name, stat):
+    def get_weapon_stat(self, weapon_id, stat):
         """
         Returns a specific stat of a weapon.
 
         Example:
-            get_weapon_stat("sniper", "damage")
+            get_weapon_stat(5, "damage")
         """
 
-        weapon = WEAPONS.get(weapon_name)
+        weapon = WEAPONS.get(weapon_id)
+        if weapon is None and isinstance(weapon_id, str):
+            # Best-effort name lookup for older scripts.
+            for wid, wstats in WEAPONS.items():
+                if str(wstats.get("name", "")).lower() == weapon_id.lower():
+                    weapon = wstats
+                    break
 
         if weapon is None:
             return None
