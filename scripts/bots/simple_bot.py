@@ -6,11 +6,7 @@ def run(state, memory):
     enemies = state.enemy_positions()
 
     if enemies:
-        target = enemies[0]
-        if isinstance(target, dict):
-            ex, ey = target["x"], target["y"]
-        else:
-            ex, ey = target[0], target[1]
+        ex, ey = enemies[0]
 
         if ex < x:
             move_left()

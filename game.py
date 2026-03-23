@@ -739,7 +739,7 @@ class PlayerClient:
 def launch_bot(script_name):
     PlayerClient(script_name=script_name, render=False)
 
-if __name__ == "__main__":
+def main():
     pygame.init()
 
     threads = []
@@ -757,3 +757,7 @@ if __name__ == "__main__":
         PlayerClient(script_name=None, render=True)
     else:
         PlayerClient(script_name=config.BOT_SCRIPTS[0], render=True)
+
+
+if __name__ == "__main__":
+    main()

@@ -88,8 +88,10 @@ class Server:
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
-        HOST_NAME = socket.gethostname()
-        SERVER_IP = socket.gethostbyname(HOST_NAME)
+        SERVER_IP = getattr(config, "SERVER_BIND_HOST", None)
+        if not SERVER_IP:
+            HOST_NAME = socket.gethostname()
+            SERVER_IP = socket.gethostbyname(HOST_NAME)
 
         try:
             self.server_socket.bind((SERVER_IP, PORT))
@@ -100,7 +102,7 @@ class Server:
 
         self.server_socket.listen()
 
-        print(f"[SERVER] Server Started with local ip {SERVER_IP}")
+        print(f"[SERVER] Server Started with bind ip {SERVER_IP}")
         return True
 
     def setup_game(self):
@@ -1661,5 +1663,6 @@ class Server:
 
 
             
-a = Server()
-print("program concluded")
+if __name__ == "__main__":
+    Server()
+    print("program concluded")

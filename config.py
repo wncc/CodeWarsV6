@@ -7,7 +7,10 @@ All game parameters in one place for easy tuning and balancing
 # NETWORK SETTINGS
 # =============================================================================
 SERVER_PORT = 5555
-SERVER_HOST = "192.168.56.1" # Change to your server IP
+# Host the client connects to.
+SERVER_HOST = "127.0.0.1"  # Localhost by default; change to your server IP for LAN play
+# Host the server binds to.
+SERVER_BIND_HOST = "0.0.0.0"  # Bind all interfaces so local clients can connect reliably
 
 # =============================================================================
 # MAP SETTINGS
@@ -20,7 +23,7 @@ GRID_SIZE = 16  # Each grid cell is 16x16 pixels
 # =============================================================================
 # MATCH SETTINGS
 # =============================================================================
-MATCH_DURATION = 180.0   # seconds 
+MATCH_DURATION = 360.0   # seconds (6 minutes)
 
 # =============================================================================
 # PLAYER/TANK SETTINGS
@@ -51,11 +54,11 @@ ENABLE_KEYBOARD_PLAYER = True
 
 # List of bot script filenames (without .py)
 BOT_SCRIPTS = [
-    "random_bot",
+    "player",
     "random_bot",
     "random_bot",
     "pro_bot",
-    "debug_bot"
+    "debug_bot",
 ]
 
 # If no keyboard player, first script bot renders
@@ -89,6 +92,19 @@ MAX_BULLET_DISTANCE = 1200  # Max travel distance before deactivation
 BULLET_VISUAL_RADIUS = 100
 
 # =============================================================================
+# SENSOR SETTINGS (BOT VISION)
+# =============================================================================
+SENSOR_RADIUS_UNARMED = 30
+SENSOR_RADIUS_DEFAULT = 30
+SENSOR_RADIUS_MIN = 10
+SENSOR_RADIUS_MAX = 50
+# Overrides to match documented examples.
+SENSOR_RADIUS_OVERRIDES = {
+    2: 10,  # Golden Deagle
+    5: 50,  # M93BA Sniper
+}
+
+# =============================================================================
 # GUN WEAPON STATS
 # Structured dictionary for clarity and future expansion
 # =============================================================================
@@ -96,7 +112,7 @@ BULLET_VISUAL_RADIUS = 100
 WEAPON_STATS = {
     0: {
         "name": "AK47",
-        "damage": 45,
+        "damage": 10,
         "accuracy": 4,
         "reload_time": 2.5,
         "melee": 30,
@@ -112,7 +128,7 @@ WEAPON_STATS = {
     },
     1: {
         "name": "Desert Eagle",
-        "damage": 20,
+        "damage": 8,
         "accuracy": 2,
         "reload_time": 1.5,
         "melee": 15,
@@ -128,7 +144,7 @@ WEAPON_STATS = {
     },
     2: {
         "name": "Golden Deagle",
-        "damage": 30,
+        "damage": 10,
         "accuracy": 2,
         "reload_time": 1.5,
         "melee": 25,
@@ -144,7 +160,7 @@ WEAPON_STATS = {
     },
     3: {
         "name": "M14",
-        "damage": 100,
+        "damage": 36,
         "accuracy": 0,
         "reload_time": 3,
         "melee": 35,
@@ -160,7 +176,7 @@ WEAPON_STATS = {
     },
     4: {
         "name": "M4",
-        "damage": 40,
+        "damage": 14,
         "accuracy": 2,
         "reload_time": 2.5,
         "melee": 30,
@@ -176,7 +192,7 @@ WEAPON_STATS = {
     },
     5: {
         "name": "M93BA Sniper",
-        "damage": 200,
+        "damage": 75,
         "accuracy": 0,
         "reload_time": 3.5,
         "melee": 35,
@@ -208,7 +224,7 @@ WEAPON_STATS = {
     },
     7: {
         "name": "MP5",
-        "damage": 25,
+        "damage": 7,
         "accuracy": 5,
         "reload_time": 2,
         "melee": 30,
@@ -224,7 +240,7 @@ WEAPON_STATS = {
     },
     8: {
         "name": "UZI",
-        "damage": 25,
+        "damage": 7,
         "accuracy": 6,
         "reload_time": 1.8,
         "melee": 20,
@@ -240,7 +256,7 @@ WEAPON_STATS = {
     },
     9: {
         "name": "TEC9",
-        "damage": 25,
+        "damage": 10,
         "accuracy": 4,
         "reload_time": 1.8,
         "melee": 25,
@@ -256,7 +272,7 @@ WEAPON_STATS = {
     },
     10: {
         "name": "SPAS-12",
-        "damage": 75,
+        "damage": 25,
         "accuracy": 10,
         "reload_time": 3.5,
         "melee": 40,
@@ -354,7 +370,7 @@ WEAPON_STATS = {
 # =============================================================================
 # GUN SPAWN SYSTEM
 # =============================================================================
-GUN_SPAWN_INTERVAL = 30    # Seconds before gun respawns
+GUN_SPAWN_INTERVAL = 15    # Seconds before gun respawns
 GUN_PICKUP_RADIUS = 20.0     # Distance to pick up gun
 MAX_GUNS_PER_PLAYER = 2      # Inventory size
 DEFAULT_STARTING_WEAPON = 1  # Desert Eagle
@@ -434,7 +450,7 @@ MEDKIT_SPAWN_POINTS = {
 # =============================================================================
 # RENDERING SETTINGS
 # =============================================================================
-GAME_FPS = 30              # Client FPS
+GAME_FPS = 60              # Client FPS
 SERVER_FPS = 60            # Server tick rate
 
 # Background Colors
@@ -524,6 +540,21 @@ def get_weapon_stat(weapon_id, stat_name):
         return None
 
     return WEAPON_STATS[weapon_id][stat_name]
+
+def get_sensor_radius(weapon_id):
+    """Get bot sensor radius in pixels for a given weapon ID."""
+    if weapon_id is None:
+        return SENSOR_RADIUS_UNARMED
+
+    if weapon_id in SENSOR_RADIUS_OVERRIDES:
+        return SENSOR_RADIUS_OVERRIDES[weapon_id]
+
+    scope = get_weapon_stat(weapon_id, "scope")
+    if scope is None:
+        return SENSOR_RADIUS_DEFAULT
+
+    radius = int(round(scope * 10))
+    return max(SENSOR_RADIUS_MIN, min(SENSOR_RADIUS_MAX, radius))
 
 def get_all_weapon_ids():
     """Get list of all weapon IDs"""
