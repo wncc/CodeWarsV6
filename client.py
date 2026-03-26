@@ -1,17 +1,44 @@
 import socket
+import time
 import numpy as np
 import config
 
 class Network:
     def __init__(self):
         self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.timeout = 5.0
+        self.client.settimeout(self.timeout)
         # default to localhost for local testing
         self.host = config.SERVER_HOST
         self.port = config.SERVER_PORT
         self.addr = (self.host, self.port)
 
     def connect(self, name):
-        self.client.connect(self.addr)
+        last_err = None
+        for attempt in range(1, 6):
+            try:
+                self.client.connect(self.addr)
+                break
+            except (socket.timeout, ConnectionRefusedError, OSError) as e:
+                last_err = e
+                if attempt < 5:
+                    time.sleep(0.5)
+                    continue
+        else:
+            if self.host not in ("127.0.0.1", "localhost"):
+                # Retry once against localhost for local dev setups.
+                self.client.close()
+                self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self.client.settimeout(self.timeout)
+                fallback_addr = ("127.0.0.1", self.port)
+                try:
+                    self.client.connect(fallback_addr)
+                    self.host, self.addr = fallback_addr[0], fallback_addr
+                    print(f"[CLIENT] Falling back to {self.host}:{self.port} after connect failure: {last_err}")
+                except (socket.timeout, ConnectionRefusedError, OSError):
+                    raise
+            else:
+                raise
 
         # inform server of username - pad to exactly 16 bytes
         name_bytes = name.encode('utf-8')[:16]  # Truncate if too long
