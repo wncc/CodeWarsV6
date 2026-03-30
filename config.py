@@ -47,15 +47,14 @@ HEALTH_REGEN_PER_SECOND = 2.0  # Slow linear regeneration for alive players
 
 # If True → first client is keyboard-controlled and rendered
 # If False → only script bots run
-ENABLE_KEYBOARD_PLAYER = True
+ENABLE_KEYBOARD_PLAYER = False
 
 # List of bot script filenames (without .py)
 BOT_SCRIPTS = [
-    "random_bot",
-    "random_bot",
-    "random_bot",
-    "pro_bot",
-    "debug_bot"
+    
+    
+    "pro_bot"
+
 ]
 
 # If no keyboard player, first script bot renders

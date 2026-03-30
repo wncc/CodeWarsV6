@@ -744,7 +744,11 @@ if __name__ == "__main__":
 
     threads = []
 
-    for script in config.BOT_SCRIPTS:
+    for idx, script in enumerate(config.BOT_SCRIPTS):
+        # When keyboard player is disabled, the first script bot is rendered below.
+        # Skip launching it as a background bot to avoid duplicate instances.
+        if not config.ENABLE_KEYBOARD_PLAYER and idx == 0:
+            continue
         t = threading.Thread(
             target=launch_bot,
             args=(script,),
