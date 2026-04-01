@@ -274,7 +274,7 @@ class Server:
             self.world_data[idx, 7] = min(self.MAX_HEALTH, health + regen_amount)
 
     def _build_leaderboard_array(self):
-        """Return top-5 leaderboard rows: [player_idx, kills, deaths, kills_minus_deaths]."""
+        """Return top-8 leaderboard rows: [player_idx, kills, deaths, kills_minus_deaths]."""
         rows = []
         for idx in range(8):
             kills = int(self.player_stats[idx, 0])
@@ -287,8 +287,8 @@ class Server:
 
         rows.sort(key=lambda r: (-r[1], -r[3], r[0]))
 
-        board = np.full((5, 4), -1, dtype=np.int32)
-        for i, row in enumerate(rows[:5]):
+        board = np.full((8, 4), -1, dtype=np.int32)
+        for i, row in enumerate(rows[:8]):
             board[i] = np.array(row, dtype=np.int32)
         return board
 

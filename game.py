@@ -712,17 +712,17 @@ class PlayerClient:
         padding = 12
         line_h = 28
         panel_w = 430
-        panel_h = 52 + (line_h * min(5, len(rows)))
+        panel_h = 52 + (line_h * min(8, len(rows)))
         panel_x = self.map_width - panel_w - padding
         panel_y = padding
 
         panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
         panel.fill((0, 0, 0, 220))
         pygame.draw.rect(panel, (255, 255, 255, 230), panel.get_rect(), 2)
-        title = self.hud_font.render("Leaderboard (Top 5)", True, (255, 255, 255))
+        title = self.hud_font.render("Leaderboard (Top 8)", True, (255, 255, 255))
         panel.blit(title, (12, 8))
 
-        for i, (name, kills, deaths, kd_delta) in enumerate(rows[:5]):
+        for i, (name, kills, deaths, kd_delta) in enumerate(rows[:8]):
             row_text = f"{i + 1}. {name[:14]:14}  K:{kills:2d}  D:{deaths:2d}  K-D:{kd_delta:3d}"
             txt = self.leaderboard_font.render(row_text, True, (245, 245, 245))
             panel.blit(txt, (12, 18 + ((i + 1) * line_h)))

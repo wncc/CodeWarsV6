@@ -574,7 +574,7 @@ class GameState:
 
     def leaderboard(self):
         """
-        Returns the current match leaderboard (top 5 players), sorted by kills.
+        Returns the current match leaderboard (top 8 players), sorted by kills.
 
         Each entry is a dictionary with:
             - "rank":    1-based position on the leaderboard

@@ -50,10 +50,16 @@ HEALTH_REGEN_PER_SECOND = 2.0  # Slow linear regeneration for alive players
 ENABLE_KEYBOARD_PLAYER = False
 
 # List of bot script filenames (without .py)
-BOT_SCRIPTS = [
-    
-    
+BOT_SCRIPTS = [      
+    "pro_bot",
+    "pro_bot",
+    "pro_bot",
+    "pro_bot",
+    "pro_bot",
+    "pro_bot",
+    "pro_bot",
     "pro_bot"
+    
 
 ]
 
